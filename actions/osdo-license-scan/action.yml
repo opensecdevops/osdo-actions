@@ -1,0 +1,168 @@
+name: "OSDO License Compliance Scan"
+description: "License detection and compliance checking for multiple package managers"
+author: "OpenSecDevOps"
+
+inputs:
+  package-manager:
+    description: "Package manager (npm, pip, maven, gradle, go, all)"
+    required: false
+    default: "all"
+  allowed-licenses:
+    description: "Comma-separated list of allowed licenses"
+    required: false
+    default: "MIT,Apache-2.0,BSD-3-Clause,BSD-2-Clause,ISC"
+  denied-licenses:
+    description: "Comma-separated list of denied licenses"
+    required: false
+    default: "GPL-3.0,AGPL-3.0,SSPL-1.0"
+  fail-on-denied:
+    description: "Fail if denied licenses found"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  total-licenses:
+    description: "Total unique licenses found"
+    value: ${{ steps.aggregate.outputs.total }}
+  denied-found:
+    description: "Denied licenses found"
+    value: ${{ steps.aggregate.outputs.denied }}
+  compliance-status:
+    description: "Compliance status (COMPLIANT/NON_COMPLIANT)"
+    value: ${{ steps.final.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/licenses
+        echo "Results will be stored in ${{ inputs.results-dir }}/licenses"
+
+    - name: Scan NPM Licenses
+      if: inputs.package-manager == 'npm' || inputs.package-manager == 'all'
+      id: npm
+      shell: bash
+      run: |
+        echo "🔍 Scanning NPM licenses..."
+
+        if [ -f "package.json" ]; then
+          # Install license-checker
+          npm install -g license-checker || true
+          
+          # Run license checker
+          license-checker --json --production > ${{ inputs.results-dir }}/licenses/npm-licenses.json || true
+          
+          total=$(jq 'keys | length' ${{ inputs.results-dir }}/licenses/npm-licenses.json 2>/dev/null || echo "0")
+          echo "npm-total=$total" >> $GITHUB_OUTPUT
+          echo "📊 Found $total NPM packages"
+        else
+          echo "npm-total=0" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Scan Python Licenses
+      if: inputs.package-manager == 'pip' || inputs.package-manager == 'all'
+      id: python
+      shell: bash
+      run: |
+        echo "🔍 Scanning Python licenses..."
+
+        if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+          # Install pip-licenses
+          pip install pip-licenses || true
+          
+          # Generate license report
+          pip-licenses --format=json --output-file=${{ inputs.results-dir }}/licenses/python-licenses.json || true
+          
+          total=$(jq 'length' ${{ inputs.results-dir }}/licenses/python-licenses.json 2>/dev/null || echo "0")
+          echo "python-total=$total" >> $GITHUB_OUTPUT
+          echo "📊 Found $total Python packages"
+        else
+          echo "python-total=0" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Check for Denied Licenses
+      id: denied-check
+      shell: bash
+      run: |
+        echo "🔍 Checking for denied licenses..."
+
+        denied_count=0
+        denied_list="${{ inputs.denied-licenses }}"
+
+        # Check NPM packages
+        if [ -f "${{ inputs.results-dir }}/licenses/npm-licenses.json" ]; then
+          IFS=',' read -ra DENIED <<< "$denied_list"
+          for license in "${DENIED[@]}"; do
+            count=$(jq -r ".[] | select(.licenses | contains(\"$license\")) | .licenses" ${{ inputs.results-dir }}/licenses/npm-licenses.json 2>/dev/null | wc -l)
+            denied_count=$((denied_count + count))
+          done
+        fi
+
+        echo "denied=$denied_count" >> $GITHUB_OUTPUT
+
+        if [ "$denied_count" -gt 0 ]; then
+          echo "⚠️  Found $denied_count packages with denied licenses"
+        else
+          echo "✅ No denied licenses found"
+        fi
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating license scan results..."
+
+        total=0
+        denied=${{ steps.denied-check.outputs.denied }}
+
+        # Sum all package counts
+        npm_total=${{ steps.npm.outputs.npm-total || 0 }}
+        python_total=${{ steps.python.outputs.python-total || 0 }}
+
+        total=$((npm_total + python_total))
+
+        echo "total=$total" >> $GITHUB_OUTPUT
+        echo "denied=$denied" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  License Compliance Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Total Packages: $total"
+        echo "  NPM: $npm_total"
+        echo "  Python: $python_total"
+        echo "  Denied Licenses: $denied"
+        echo "═══════════════════════════════════════"
+
+    - name: Determine Compliance Status
+      id: final
+      shell: bash
+      run: |
+        denied=${{ steps.aggregate.outputs.denied }}
+
+        if [ "$denied" -eq 0 ]; then
+          echo "status=COMPLIANT" >> $GITHUB_OUTPUT
+          echo "✅ License compliance: COMPLIANT"
+        else
+          echo "status=NON_COMPLIANT" >> $GITHUB_OUTPUT
+          echo "❌ License compliance: NON_COMPLIANT"
+        fi
+
+    - name: Fail on Denied Licenses
+      if: inputs.fail-on-denied == 'true'
+      shell: bash
+      run: |
+        denied=${{ steps.aggregate.outputs.denied }}
+
+        if [ "$denied" -gt 0 ]; then
+          echo "::error::Found $denied packages with denied licenses"
+          exit 1
+        fi
+
+        echo "✅ No denied licenses found"

@@ -1,0 +1,118 @@
+name: "OSDO Setup Environment"
+description: "Setup base environment for OSDO security compliance pipeline"
+author: "OpenSecDevOps"
+
+inputs:
+  node-version:
+    description: "Node.js version to use"
+    required: false
+    default: "22"
+  python-version:
+    description: "Python version to use"
+    required: false
+    default: "3.11"
+  java-version:
+    description: "Java version to use"
+    required: false
+    default: "17"
+  go-version:
+    description: "Go version to use"
+    required: false
+    default: "1.21"
+  setup-docker:
+    description: "Setup Docker environment"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store OSDO results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  results-dir:
+    description: "Path to results directory"
+    value: ${{ steps.setup.outputs.results-dir }}
+  cache-key:
+    description: "Cache key for dependencies"
+    value: ${{ steps.setup.outputs.cache-key }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      if: inputs.node-version != 'false'
+      uses: actions/setup-node@v4
+      continue-on-error: true
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: "npm"
+        cache-dependency-path: "**/package-lock.json"
+
+    - name: Setup Python
+      if: inputs.python-version != 'false'
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: "pip"
+
+    - name: Setup Java
+      if: inputs.java-version != 'false'
+      uses: actions/setup-java@v4
+      continue-on-error: true
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: "temurin"
+
+    - name: Setup Go
+      if: inputs.go-version != 'false'
+      uses: actions/setup-go@v5
+      continue-on-error: true
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+
+    - name: Setup Docker Buildx
+      if: inputs.setup-docker == 'true'
+      uses: docker/setup-buildx-action@v3
+
+    - name: Create OSDO directories
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}
+        mkdir -p .osdo/cache
+        mkdir -p .osdo/reports
+        mkdir -p .osdo/artifacts
+        mkdir -p .osdo/sbom
+        echo "✅ Created OSDO directory structure"
+
+    - name: Setup environment variables
+      shell: bash
+      id: setup
+      run: |
+        echo "results-dir=${{ inputs.results-dir }}" >> $GITHUB_OUTPUT
+        echo "cache-key=osdo-${{ runner.os }}-${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "OSDO_RESULTS_DIR=${{ inputs.results-dir }}" >> $GITHUB_ENV
+        echo "OSDO_CACHE_DIR=.osdo/cache" >> $GITHUB_ENV
+        echo "OSDO_REPORTS_DIR=.osdo/reports" >> $GITHUB_ENV
+        echo "OSDO_ARTIFACTS_DIR=.osdo/artifacts" >> $GITHUB_ENV
+        echo "OSDO_SBOM_DIR=.osdo/sbom" >> $GITHUB_ENV
+        echo "✅ Environment variables configured"
+
+    - name: Display Environment Info
+      shell: bash
+      run: |
+        echo "🔧 OSDO Environment Setup Complete"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Node.js: $(node --version 2>/dev/null || echo 'not installed')"
+        echo "Python: $(python --version 2>/dev/null || echo 'not installed')"
+        echo "Java: $(java -version 2>&1 | head -n1 || echo 'not installed')"
+        echo "Go: $(go version 2>/dev/null || echo 'not installed')"
+        echo "Docker: $(docker --version 2>/dev/null || echo 'not installed')"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Results Dir: ${{ inputs.results-dir }}"
+        echo "Cache Key: osdo-${{ runner.os }}-${{ github.sha }}"

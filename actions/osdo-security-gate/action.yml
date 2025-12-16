@@ -1,0 +1,178 @@
+name: "OSDO Security Quality Gate"
+description: "Evaluate security quality gate based on vulnerability thresholds and compliance metrics"
+author: "OpenSecDevOps"
+
+inputs:
+  critical-threshold:
+    description: "Maximum allowed critical vulnerabilities"
+    required: false
+    default: "0"
+  high-threshold:
+    description: "Maximum allowed high severity vulnerabilities"
+    required: false
+    default: "5"
+  secrets-threshold:
+    description: "Maximum allowed secrets found"
+    required: false
+    default: "0"
+  fail-on-critical:
+    description: "Fail pipeline on critical vulnerabilities"
+    required: false
+    default: "true"
+  fail-on-secrets:
+    description: "Fail pipeline on secrets found"
+    required: false
+    default: "false"
+  coverage-threshold:
+    description: "Minimum required test coverage percentage"
+    required: false
+    default: "80"
+  results-dir:
+    description: "Directory containing scan results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  gate-status:
+    description: "Quality gate status (PASSED, FAILED, WARNING)"
+    value: ${{ steps.evaluate.outputs.status }}
+  critical-vulns:
+    description: "Number of critical vulnerabilities found"
+    value: ${{ steps.evaluate.outputs.critical-vulns }}
+  high-vulns:
+    description: "Number of high vulnerabilities found"
+    value: ${{ steps.evaluate.outputs.high-vulns }}
+  secrets-found:
+    description: "Number of secrets found"
+    value: ${{ steps.evaluate.outputs.secrets-found }}
+  coverage-percentage:
+    description: "Test coverage percentage"
+    value: ${{ steps.evaluate.outputs.coverage }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare Quality Gate Directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/quality-gate
+        echo "📋 Preparing quality gate evaluation..."
+
+    - name: Evaluate Security Quality Gate
+      shell: bash
+      id: evaluate
+      run: |
+        # Initialize counters
+        critical_vulns=0
+        high_vulns=0
+        medium_vulns=0
+        secrets_found=0
+        coverage=0
+
+        # Analyze results from various scanners
+        results_dir="${{ inputs.results-dir }}"
+
+        # Check container scan results
+        if [ -f "$results_dir/container/trivy.json" ]; then
+          trivy_critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$results_dir/container/trivy.json" 2>/dev/null || echo "0")
+          trivy_high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$results_dir/container/trivy.json" 2>/dev/null || echo "0")
+          critical_vulns=$((critical_vulns + trivy_critical))
+          high_vulns=$((high_vulns + trivy_high))
+        fi
+
+        # Check IaC scan results
+        if [ -f "$results_dir/iac/checkov.json" ]; then
+          iac_failed=$(jq '.summary.failed // 0' "$results_dir/iac/checkov.json" 2>/dev/null || echo "0")
+          high_vulns=$((high_vulns + iac_failed))
+        fi
+
+        # Check secrets scan results
+        if [ -f "$results_dir/mobile/secrets.json" ]; then
+          secrets_found=$(jq 'length' "$results_dir/mobile/secrets.json" 2>/dev/null || echo "0")
+        fi
+
+        # Determine gate status
+        gate_status="PASSED"
+        failure_reasons=()
+        warning_reasons=()
+
+        # Check critical vulnerabilities
+        if [ "$critical_vulns" -gt "${{ inputs.critical-threshold }}" ]; then
+          if [ "${{ inputs.fail-on-critical }}" = "true" ]; then
+            gate_status="FAILED"
+            failure_reasons+=("Critical vulnerabilities: $critical_vulns (threshold: ${{ inputs.critical-threshold }})")
+          else
+            gate_status="WARNING"
+            warning_reasons+=("Critical vulnerabilities: $critical_vulns (threshold: ${{ inputs.critical-threshold }})")
+          fi
+        fi
+
+        # Check high vulnerabilities
+        if [ "$high_vulns" -gt "${{ inputs.high-threshold }}" ]; then
+          if [ "$gate_status" != "FAILED" ]; then
+            gate_status="WARNING"
+          fi
+          warning_reasons+=("High vulnerabilities: $high_vulns (threshold: ${{ inputs.high-threshold }})")
+        fi
+
+        # Check secrets
+        if [ "$secrets_found" -gt "${{ inputs.secrets-threshold }}" ]; then
+          if [ "${{ inputs.fail-on-secrets }}" = "true" ]; then
+            gate_status="FAILED"
+            failure_reasons+=("Secrets found: $secrets_found (threshold: ${{ inputs.secrets-threshold }})")
+          else
+            if [ "$gate_status" != "FAILED" ]; then
+              gate_status="WARNING"
+            fi
+            warning_reasons+=("Secrets found: $secrets_found (threshold: ${{ inputs.secrets-threshold }})")
+          fi
+        fi
+
+        # Generate quality gate report
+        cat > ${{ inputs.results-dir }}/quality-gate/report.json <<EOF
+        {
+          "quality_gate": {
+            "status": "$gate_status",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "thresholds": {
+              "critical_vulnerabilities": ${{ inputs.critical-threshold }},
+              "high_vulnerabilities": ${{ inputs.high-threshold }},
+              "secrets": ${{ inputs.secrets-threshold }},
+              "coverage": ${{ inputs.coverage-threshold }}
+            },
+            "results": {
+              "critical_vulnerabilities": $critical_vulns,
+              "high_vulnerabilities": $high_vulns,
+              "secrets_found": $secrets_found,
+              "test_coverage": $coverage
+            }
+          }
+        }
+        EOF
+
+        # Set outputs
+        echo "status=$gate_status" >> $GITHUB_OUTPUT
+        echo "critical-vulns=$critical_vulns" >> $GITHUB_OUTPUT
+        echo "high-vulns=$high_vulns" >> $GITHUB_OUTPUT
+        echo "secrets-found=$secrets_found" >> $GITHUB_OUTPUT
+        echo "coverage=$coverage" >> $GITHUB_OUTPUT
+
+        # Display results
+        echo ""
+        echo "🚦 Security Quality Gate Evaluation"
+        echo "═══════════════════════════════════"
+        echo "Status: $gate_status"
+        echo "Critical Vulnerabilities: $critical_vulns (threshold: ${{ inputs.critical-threshold }})"
+        echo "High Vulnerabilities: $high_vulns (threshold: ${{ inputs.high-threshold }})"
+        echo "Secrets Found: $secrets_found (threshold: ${{ inputs.secrets-threshold }})"
+        echo "═══════════════════════════════════"
+
+        # Fail if necessary
+        if [ "$gate_status" = "FAILED" ]; then
+          echo "::error::Security Quality Gate FAILED"
+          exit 1
+        elif [ "$gate_status" = "WARNING" ]; then
+          echo "::warning::Security Quality Gate passed with warnings"
+        else
+          echo "✅ Security Quality Gate PASSED"
+        fi

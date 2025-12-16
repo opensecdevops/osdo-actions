@@ -1,0 +1,129 @@
+name: "OSDO API Security Scan"
+description: "API security testing including OpenAPI validation, OWASP API Top 10, and schema validation"
+author: "OpenSecDevOps"
+
+inputs:
+  api-spec-path:
+    description: "Path to API specification (OpenAPI/Swagger)"
+    required: false
+    default: ""
+  api-type:
+    description: "API type (REST, GraphQL, gRPC)"
+    required: false
+    default: "REST"
+  base-url:
+    description: "Base URL of the API"
+    required: false
+    default: ""
+  enable-fuzzing:
+    description: "Enable API fuzzing"
+    required: false
+    default: "false"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  vulnerabilities-found:
+    description: "Total vulnerabilities found"
+    value: ${{ steps.aggregate.outputs.total }}
+  spec-valid:
+    description: "API spec validation result"
+    value: ${{ steps.spec-validation.outputs.valid }}
+  security-score:
+    description: "API security score"
+    value: ${{ steps.aggregate.outputs.score }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/api
+        echo "Results will be stored in ${{ inputs.results-dir }}/api"
+
+    - name: Validate OpenAPI Spec
+      if: inputs.api-spec-path != '' && inputs.api-type == 'REST'
+      id: spec-validation
+      shell: bash
+      run: |
+        echo "🔍 Validating OpenAPI specification..."
+
+        # Install Spectral
+        npm install -g @stoplight/spectral-cli || true
+
+        # Validate spec
+        if spectral lint ${{ inputs.api-spec-path }} --format json > ${{ inputs.results-dir }}/api/spectral.json; then
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "✅ API specification is valid"
+        else
+          errors=$(jq length ${{ inputs.results-dir }}/api/spectral.json 2>/dev/null || echo "0")
+          echo "valid=false" >> $GITHUB_OUTPUT
+          echo "errors=$errors" >> $GITHUB_OUTPUT
+          echo "⚠️  Found $errors specification errors"
+        fi
+
+    - name: API Security Testing with Schemathesis
+      if: inputs.api-spec-path != '' && inputs.base-url != ''
+      id: schemathesis
+      shell: bash
+      run: |
+        echo "🔍 Running API security tests with Schemathesis..."
+
+        # Install Schemathesis
+        pip install schemathesis || true
+
+        # Run API testing
+        schemathesis run ${{ inputs.api-spec-path }} \
+          --base-url ${{ inputs.base-url }} \
+          --checks all \
+          --hypothesis-max-examples=100 \
+          --report ${{ inputs.results-dir }}/api/schemathesis.json || true
+
+        echo "✅ API security testing completed"
+
+    - name: API Fuzzing
+      if: inputs.enable-fuzzing == 'true' && inputs.api-spec-path != ''
+      shell: bash
+      run: |
+        echo "🔍 Running API fuzzing..."
+
+        # Run fuzzing with increased examples
+        schemathesis run ${{ inputs.api-spec-path }} \
+          --base-url ${{ inputs.base-url }} \
+          --checks all \
+          --hypothesis-max-examples=1000 \
+          --hypothesis-seed=1 || true
+
+        echo "✅ API fuzzing completed"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating API security results..."
+
+        total=0
+        score=100
+
+        # Check spec validation
+        if [ "${{ steps.spec-validation.outputs.valid }}" == "false" ]; then
+          errors=${{ steps.spec-validation.outputs.errors || 0 }}
+          total=$((total + errors))
+          score=$((score - 10))
+        fi
+
+        echo "total=$total" >> $GITHUB_OUTPUT
+        echo "score=$score" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  API Security Scan Summary"
+        echo "═══════════════════════════════════════"
+        echo "  API Type: ${{ inputs.api-type }}"
+        echo "  Spec Valid: ${{ steps.spec-validation.outputs.valid || 'N/A' }}"
+        echo "  Security Score: $score/100"
+        echo "  Issues Found: $total"
+        echo "═══════════════════════════════════════"

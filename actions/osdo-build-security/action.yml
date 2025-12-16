@@ -1,0 +1,172 @@
+name: "OSDO Build Security & SBOM"
+description: "Secure build process with SBOM generation and build verification"
+author: "OpenSecDevOps"
+
+inputs:
+  build-command:
+    description: "Build command to execute"
+    required: false
+    default: "npm run build"
+  sbom-format:
+    description: "SBOM format (spdx, cyclonedx, both)"
+    required: false
+    default: "both"
+  verify-build:
+    description: "Verify build integrity"
+    required: false
+    default: "true"
+  build-dir:
+    description: "Build output directory"
+    required: false
+    default: "dist"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  sbom-files:
+    description: "Generated SBOM files"
+    value: ${{ steps.sbom.outputs.files }}
+  build-size:
+    description: "Build output size"
+    value: ${{ steps.build.outputs.size }}
+  build-status:
+    description: "Build verification status"
+    value: ${{ steps.verify.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Dependencies
+      shell: bash
+      run: |
+        echo "📦 Installing dependencies..."
+
+        if [ -f package.json ]; then
+          npm ci
+        elif [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        elif [ -f Pipfile ]; then
+          pip install pipenv && pipenv install --dev
+        elif [ -f pyproject.toml ]; then
+          pip install -e .
+        fi
+
+    - name: Generate SBOM
+      shell: bash
+      id: sbom
+      run: |
+        echo "📋 Generating SBOM..."
+        sbom_files=""
+
+        # Install Syft for universal SBOM generation
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+        # Generate SPDX format
+        if [ "${{ inputs.sbom-format }}" = "spdx" ] || [ "${{ inputs.sbom-format }}" = "both" ]; then
+          syft . -o spdx-json=${{ inputs.results-dir }}/sbom-spdx.json
+          sbom_files="${{inputs.results-dir }}/sbom-spdx.json"
+        fi
+
+        # Generate CycloneDX format
+        if [ "${{ inputs.sbom-format }}" = "cyclonedx" ] || [ "${{ inputs.sbom-format }}" = "both" ]; then
+          syft . -o cyclonedx-json=${{ inputs.results-dir }}/sbom-cyclonedx.json
+          sbom_files="$sbom_files,${{ inputs.results-dir }}/sbom-cyclonedx.json"
+        fi
+
+        echo "files=${sbom_files#,}" >> $GITHUB_OUTPUT
+        echo "✅ SBOM generated successfully"
+
+    - name: Build Application
+      shell: bash
+      id: build
+      run: |
+        echo "🔨 Building application..."
+
+        # Execute build command
+        if [ -f package.json ] && npm run | grep -q "build"; then
+          ${{ inputs.build-command }}
+        elif [ -f setup.py ]; then
+          python setup.py build
+        elif [ -f pyproject.toml ]; then
+          pip install build && python -m build
+        else
+          echo "ℹ️ No build configuration found, skipping build step"
+        fi
+
+        # Calculate build size
+        if [ -d "${{ inputs.build-dir }}" ]; then
+          build_size=$(du -sh "${{ inputs.build-dir }}" | cut -f1)
+        else
+          build_size="N/A"
+        fi
+
+        echo "size=$build_size" >> $GITHUB_OUTPUT
+        echo "✅ Build completed (size: $build_size)"
+
+    - name: Verify Build Integrity
+      shell: bash
+      id: verify
+      run: |
+        if [ "${{ inputs.verify-build }}" = "true" ]; then
+          echo "🔍 Verifying build integrity..."
+          
+          build_dir="${{ inputs.build-dir }}"
+          if [ -d "$build_dir" ]; then
+            # Count files
+            file_count=$(find "$build_dir" -type f | wc -l)
+            
+            # Check for common build outputs
+            has_main_files=false
+            if [ -f "$build_dir/index.html" ] || [ -f "$build_dir/main.js" ] || find "$build_dir" -name "*.whl" | grep -q .; then
+              has_main_files=true
+            fi
+            
+            # Generate integrity report
+            cat > ${{ inputs.results-dir }}/build-integrity.json <<EOF
+        {
+          "build_directory": "$build_dir",
+          "total_files": $file_count,
+          "build_size": "${{ steps.build.outputs.size }}",
+          "has_main_files": $has_main_files,
+          "verified_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        }
+        EOF
+            
+            if [ "$has_main_files" = "true" ] && [ "$file_count" -gt 0 ]; then
+              echo "status=VERIFIED" >> $GITHUB_OUTPUT
+              echo "✅ Build integrity verified: $file_count files"
+            else
+              echo "status=WARNING" >> $GITHUB_OUTPUT
+              echo "⚠️ Build verification warning"
+            fi
+          else
+            echo "status=SKIPPED" >> $GITHUB_OUTPUT
+            echo "ℹ️ Build directory not found"
+          fi
+        else
+          echo "status=DISABLED" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Generate Build Manifest
+      shell: bash
+      run: |
+        cat > ${{ inputs.results-dir }}/build-manifest.json <<EOF
+        {
+          "build_info": {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "build_command": "${{ inputs.build-command }}",
+            "build_directory": "${{ inputs.build-dir }}",
+            "build_size": "${{ steps.build.outputs.size }}",
+            "verification_status": "${{ steps.verify.outputs.status }}"
+          },
+          "sbom": {
+            "generated": true,
+            "format": "${{ inputs.sbom-format }}",
+            "files": "${{ steps.sbom.outputs.files }}"
+          }
+        }
+        EOF
+
+        echo "✅ Build manifest generated"

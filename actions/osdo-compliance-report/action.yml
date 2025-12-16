@@ -1,0 +1,210 @@
+name: 'OSDO Compliance Report'
+description: 'Generate comprehensive OSDO compliance and security report'
+inputs:
+  test-results:
+    description: 'Test results from quality gate'
+    required: false
+  security-results:
+    description: 'Security scan results'
+    required: false
+  coverage-percentage:
+    description: 'Code coverage percentage'
+    required: false
+  security-score:
+    description: 'Security score'
+    required: false
+  build-security-results:
+    description: 'Build security and SBOM results'
+    required: false
+  quality-gate-status:
+    description: 'Security quality gate status'
+    required: false
+  project-name:
+    description: 'Project name for the report'
+    required: false
+    default: ${{ github.repository }}
+  report-format:
+    description: 'Report format (markdown, html, json)'
+    required: false
+    default: 'markdown'
+
+outputs:
+  report-path:
+    description: 'Path to generated compliance report'
+    value: ${{ steps.generate.outputs.report-path }}
+  compliance-status:
+    description: 'Overall compliance status'
+    value: ${{ steps.generate.outputs.compliance-status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Collect all results
+      shell: bash
+      run: |
+        # Create compliance summary
+        echo "Collecting OSDO compliance data..."
+        
+        # Merge all SARIF files
+        find $OSDO_RESULTS_DIR -name "*.sarif" -type f > $OSDO_RESULTS_DIR/sarif-files.txt || true
+        
+        # Create summary JSON
+        cat > $OSDO_RESULTS_DIR/compliance-summary.json << EOF
+        {
+          "project": "${{ inputs.project-name }}",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "git_ref": "${{ github.ref }}",
+          "git_sha": "${{ github.sha }}",
+          "test_coverage": "${{ inputs.coverage-percentage }}",
+          "security_score": "${{ inputs.security-score }}",
+          "workflow_run": "${{ github.run_id }}"
+        }
+        EOF
+
+    - name: Generate compliance report
+      shell: bash
+      id: generate
+      run: |
+        REPORT_PATH="$OSDO_REPORTS_DIR/osdo-compliance-report"
+        
+        if [ "${{ inputs.report-format }}" = "html" ]; then
+          REPORT_FILE="$REPORT_PATH.html"
+          # Generate HTML report
+          cat > "$REPORT_FILE" << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>OSDO Compliance Report</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                .header { background: #2d3748; color: white; padding: 20px; border-radius: 8px; }
+                .metric { background: #f7fafc; padding: 15px; margin: 10px 0; border-radius: 5px; }
+                .success { border-left: 4px solid #38a169; }
+                .warning { border-left: 4px solid #d69e2e; }
+                .error { border-left: 4px solid #e53e3e; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🛡️ OSDO Compliance Report</h1>
+                <p>Project: ${{ inputs.project-name }}</p>
+                <p>Generated: $(date)</p>
+            </div>
+        EOF
+        elif [ "${{ inputs.report-format }}" = "json" ]; then
+          REPORT_FILE="$REPORT_PATH.json"
+          cp "$OSDO_RESULTS_DIR/compliance-summary.json" "$REPORT_FILE"
+        else
+          # Default to Markdown
+          REPORT_FILE="$REPORT_PATH.md"
+          cat > "$REPORT_FILE" << EOF
+        # 🛡️ OSDO Compliance Report
+        
+        **Project:** ${{ inputs.project-name }}  
+        **Generated:** $(date -u +%Y-%m-%dT%H:%M:%SZ)  
+        **Git Reference:** ${{ github.ref }}  
+        **Commit SHA:** ${{ github.sha }}  
+        **Workflow Run:** [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+        
+        ## 📊 Compliance Summary
+        
+        | Metric | Value | Status |
+        |--------|-------|--------|
+        | Test Coverage | ${{ inputs.coverage-percentage }}% | $([ "${{ inputs.coverage-percentage }}" -ge "80" ] && echo "✅ PASS" || echo "⚠️ NEEDS IMPROVEMENT") |
+        | Security Score | ${{ inputs.security-score }}/100 | $([ "${{ inputs.security-score }}" -ge "90" ] && echo "✅ EXCELLENT" || [ "${{ inputs.security-score }}" -ge "70" ] && echo "⚠️ GOOD" || echo "❌ NEEDS ATTENTION") |
+        
+        ## 🔍 Security Analysis
+        
+        EOF
+        
+          # Add SARIF results summary
+          if [ -f "$OSDO_RESULTS_DIR/sarif-files.txt" ]; then
+            echo "### SARIF Reports Generated" >> "$REPORT_FILE"
+            while read -r sarif_file; do
+              if [ -f "$sarif_file" ]; then
+                filename=$(basename "$sarif_file")
+                issues=$(jq '[.runs[].results[]] | length' "$sarif_file" 2>/dev/null || echo "0")
+                echo "- **$filename**: $issues issues found" >> "$REPORT_FILE"
+              fi
+            done < "$OSDO_RESULTS_DIR/sarif-files.txt"
+          fi
+          
+          # Add SBOM information
+          echo "" >> "$REPORT_FILE"
+          echo "## 📦 Software Bill of Materials (SBOM)" >> "$REPORT_FILE"
+          if [ -f "$OSDO_RESULTS_DIR/build-manifest.json" ]; then
+            sbom_status=$(jq -r '.sbom.generated' "$OSDO_RESULTS_DIR/build-manifest.json" 2>/dev/null || echo "false")
+            sbom_format=$(jq -r '.sbom.format' "$OSDO_RESULTS_DIR/build-manifest.json" 2>/dev/null || echo "unknown")
+            echo "- **SBOM Generated**: $([ "$sbom_status" = "true" ] && echo "✅ Yes" || echo "❌ No")" >> "$REPORT_FILE"
+            echo "- **Format**: $sbom_format" >> "$REPORT_FILE"
+            if [ -f "$OSDO_RESULTS_DIR/sbom.json" ]; then
+              echo "- **JSON SBOM**: Available" >> "$REPORT_FILE"
+            fi
+            if [ -f "$OSDO_RESULTS_DIR/sbom.xml" ]; then
+              echo "- **XML SBOM**: Available" >> "$REPORT_FILE"
+            fi
+          fi
+          
+          # Add Quality Gate information
+          echo "" >> "$REPORT_FILE"
+          echo "## 🚦 Security Quality Gate" >> "$REPORT_FILE"
+          if [ -f "$OSDO_RESULTS_DIR/quality-gate/quality-gate-report.json" ]; then
+            gate_status=$(jq -r '.quality_gate.status' "$OSDO_RESULTS_DIR/quality-gate/quality-gate-report.json" 2>/dev/null || echo "UNKNOWN")
+            critical_vulns=$(jq -r '.quality_gate.results.critical_vulnerabilities' "$OSDO_RESULTS_DIR/quality-gate/quality-gate-report.json" 2>/dev/null || echo "0")
+            high_vulns=$(jq -r '.quality_gate.results.high_vulnerabilities' "$OSDO_RESULTS_DIR/quality-gate/quality-gate-report.json" 2>/dev/null || echo "0")
+            secrets=$(jq -r '.quality_gate.results.secrets_found' "$OSDO_RESULTS_DIR/quality-gate/quality-gate-report.json" 2>/dev/null || echo "0")
+            
+            if [ "$gate_status" = "PASSED" ]; then
+              echo "- **Status**: ✅ PASSED" >> "$REPORT_FILE"
+            elif [ "$gate_status" = "WARNING" ]; then
+              echo "- **Status**: ⚠️ WARNING" >> "$REPORT_FILE"
+            else
+              echo "- **Status**: ❌ FAILED" >> "$REPORT_FILE"
+            fi
+            
+            echo "- **Critical Vulnerabilities**: $critical_vulns" >> "$REPORT_FILE"
+            echo "- **High Vulnerabilities**: $high_vulns" >> "$REPORT_FILE"
+            echo "- **Secrets Found**: $secrets" >> "$REPORT_FILE"
+          fi
+          
+          # Add build information
+          echo "" >> "$REPORT_FILE"
+          echo "## 🏗️ Build Security" >> "$REPORT_FILE"
+          if [ -f "$OSDO_RESULTS_DIR/build-manifest.json" ]; then
+            build_size=$(jq -r '.build_info.build_size' "$OSDO_RESULTS_DIR/build-manifest.json" 2>/dev/null || echo "N/A")
+            verification_status=$(jq -r '.build_info.verification_status' "$OSDO_RESULTS_DIR/build-manifest.json" 2>/dev/null || echo "UNKNOWN")
+            echo "- **Build Size**: $build_size" >> "$REPORT_FILE"
+            echo "- **Verification Status**: $verification_status" >> "$REPORT_FILE"
+          fi
+        fi
+        
+        # Determine compliance status
+        coverage="${{ inputs.coverage-percentage }}"
+        security="${{ inputs.security-score }}"
+        
+        if [ "$coverage" -ge "80" ] && [ "$security" -ge "90" ]; then
+          compliance_status="COMPLIANT"
+        elif [ "$coverage" -ge "60" ] && [ "$security" -ge "70" ]; then
+          compliance_status="PARTIALLY_COMPLIANT"
+        else
+          compliance_status="NON_COMPLIANT"
+        fi
+        
+        echo "report-path=$REPORT_FILE" >> $GITHUB_OUTPUT
+        echo "compliance-status=$compliance_status" >> $GITHUB_OUTPUT
+        
+        echo "::notice::OSDO Compliance Status: $compliance_status"
+
+    - name: Upload SARIF files to GitHub Security
+      shell: bash
+      run: |
+        if [ -f "$OSDO_RESULTS_DIR/sarif-files.txt" ]; then
+          while read -r sarif_file; do
+            if [ -f "$sarif_file" ] && [ -s "$sarif_file" ]; then
+              echo "Uploading SARIF: $sarif_file"
+              # Note: This would typically use github/codeql-action/upload-sarif
+              # but we can't call actions from within composite actions
+              echo "Would upload: $sarif_file"
+            fi
+          done < "$OSDO_RESULTS_DIR/sarif-files.txt"
+        fi

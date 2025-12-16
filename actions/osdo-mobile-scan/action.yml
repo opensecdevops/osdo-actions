@@ -1,0 +1,225 @@
+name: "OSDO Mobile Security Scan"
+description: "Mobile application security scanning for Android and iOS with MASVS compliance"
+author: "OpenSecDevOps"
+
+inputs:
+  platform:
+    description: "Mobile platform (android, ios, react-native, flutter)"
+    required: true
+  binary-path:
+    description: "Path to mobile binary (.apk, .ipa)"
+    required: false
+    default: ""
+  source-path:
+    description: "Path to source code"
+    required: false
+    default: "."
+  masvs-level:
+    description: "OWASP MASVS level (L1, L2)"
+    required: false
+    default: "L1"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  security-score:
+    description: "Mobile security score"
+    value: ${{ steps.aggregate.outputs.score }}
+  masvs-compliant:
+    description: "MASVS compliance status"
+    value: ${{ steps.masvs.outputs.compliant }}
+  critical-issues:
+    description: "Critical issues found"
+    value: ${{ steps.aggregate.outputs.critical }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/mobile
+        echo "Results will be stored in ${{ inputs.results-dir }}/mobile"
+
+    - name: Check SSL Pinning Implementation
+      id: ssl-pinning
+      shell: bash
+      run: |
+        echo "🔍 Checking SSL pinning implementation..."
+
+        implemented="false"
+
+        # Android: Check for certificate pinning
+        if [ "${{ inputs.platform }}" == "android" ]; then
+          if grep -r "CertificatePinner\|TrustManager" ${{ inputs.source-path }} 2>/dev/null; then
+            implemented="true"
+          fi
+        fi
+
+        # iOS: Check for SSL pinning
+        if [ "${{ inputs.platform }}" == "ios" ]; then
+          if grep -r "SecTrustSetPolicies\|NSURLSession" ${{ inputs.source-path }} 2>/dev/null; then
+            implemented="true"
+          fi
+        fi
+
+        echo "implemented=$implemented" >> $GITHUB_OUTPUT
+
+        if [ "$implemented" == "true" ]; then
+          echo "✅ SSL pinning implementation found"
+        else
+          echo "⚠️  SSL pinning not detected"
+        fi
+
+    - name: Check Code Obfuscation
+      id: obfuscation
+      shell: bash
+      run: |
+        echo "🔍 Checking code obfuscation..."
+
+        obfuscated="false"
+
+        # Android: Check for ProGuard/R8
+        if [ "${{ inputs.platform }}" == "android" ]; then
+          if [ -f "proguard-rules.pro" ] || [ -f "app/proguard-rules.pro" ]; then
+            obfuscated="true"
+          fi
+        fi
+
+        echo "obfuscated=$obfuscated" >> $GITHUB_OUTPUT
+
+        if [ "$obfuscated" == "true" ]; then
+          echo "✅ Code obfuscation detected"
+        else
+          echo "⚠️  Code obfuscation not detected"
+        fi
+
+    - name: Check Root Detection
+      id: root-detection
+      shell: bash
+      run: |
+        echo "🔍 Checking root/jailbreak detection..."
+
+        implemented="false"
+
+        if grep -r "RootBeer\|checkRootMethod\|isJailbroken" ${{ inputs.source-path }} 2>/dev/null; then
+          implemented="true"
+        fi
+
+        echo "implemented=$implemented" >> $GITHUB_OUTPUT
+
+        if [ "$implemented" == "true" ]; then
+          echo "✅ Root detection implemented"
+        else
+          echo "⚠️  Root detection not found"
+        fi
+
+    - name: Scan for Hardcoded Secrets
+      id: secrets
+      shell: bash
+      run: |
+        echo "🔍 Scanning for hardcoded secrets..."
+
+        # Use TruffleHog via Docker
+        docker run --rm -v $(pwd):/src \
+          trufflesecurity/trufflehog:latest \
+          filesystem /src/${{ inputs.source-path }} \
+          --json > ${{ inputs.results-dir }}/mobile/secrets.json || true
+
+        secrets_found=$(jq length ${{ inputs.results-dir }}/mobile/secrets.json 2>/dev/null || echo "0")
+
+        echo "secrets=$secrets_found" >> $GITHUB_OUTPUT
+
+        if [ "$secrets_found" -gt 0 ]; then
+          echo "⚠️  Found $secrets_found potential secrets"
+        else
+          echo "✅ No hardcoded secrets detected"
+        fi
+
+    - name: MASVS Compliance Check
+      id: masvs
+      shell: bash
+      run: |
+        echo "📊 Checking OWASP MASVS compliance..."
+
+        score=0
+        total=3
+
+        # Check MASVS-NETWORK
+        if [ "${{ steps.ssl-pinning.outputs.implemented }}" == "true" ]; then
+          score=$((score + 1))
+        fi
+
+        # Check MASVS-CODE
+        if [ "${{ steps.obfuscation.outputs.obfuscated }}" == "true" ]; then
+          score=$((score + 1))
+        fi
+
+        # Check MASVS-RESILIENCE
+        if [ "${{ steps.root-detection.outputs.implemented }}" == "true" ]; then
+          score=$((score + 1))
+        fi
+
+        percentage=$((score * 100 / total))
+
+        compliant="false"
+        if [ "${{ inputs.masvs-level }}" == "L1" ] && [ "$percentage" -ge 70 ]; then
+          compliant="true"
+        elif [ "${{ inputs.masvs-level }}" == "L2" ] && [ "$percentage" -ge 90 ]; then
+          compliant="true"
+        fi
+
+        echo "compliant=$compliant" >> $GITHUB_OUTPUT
+        echo "score=$percentage" >> $GITHUB_OUTPUT
+
+        echo "📊 MASVS Compliance: $compliant ($percentage%)"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating mobile security results..."
+
+        score=100
+        critical=0
+
+        # Deduct for missing security features
+        if [ "${{ steps.ssl-pinning.outputs.implemented }}" != "true" ]; then
+          score=$((score - 20))
+          critical=$((critical + 1))
+        fi
+
+        if [ "${{ steps.obfuscation.outputs.obfuscated }}" != "true" ]; then
+          score=$((score - 15))
+        fi
+
+        if [ "${{ steps.root-detection.outputs.implemented }}" != "true" ]; then
+          score=$((score - 15))
+        fi
+
+        secrets=${{ steps.secrets.outputs.secrets || 0 }}
+        if [ "$secrets" -gt 0 ]; then
+          score=$((score - (secrets * 5)))
+          critical=$((critical + 1))
+        fi
+
+        score=$((score < 0 ? 0 : score))
+
+        echo "score=$score" >> $GITHUB_OUTPUT
+        echo "critical=$critical" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  Mobile Security Scan Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Platform: ${{ inputs.platform }}"
+        echo "  Security Score: $score/100"
+        echo "  MASVS Compliance: ${{ steps.masvs.outputs.compliant }}"
+        echo "  Critical Issues: $critical"
+        echo "  SSL Pinning: ${{ steps.ssl-pinning.outputs.implemented }}"
+        echo "  Code Obfuscation: ${{ steps.obfuscation.outputs.obfuscated }}"
+        echo "  Root Detection: ${{ steps.root-detection.outputs.implemented }}"
+        echo "  Hardcoded Secrets: ${{ steps.secrets.outputs.secrets || 0 }}"
+        echo "═══════════════════════════════════════"

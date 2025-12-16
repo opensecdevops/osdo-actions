@@ -1,31 +1,240 @@
-name: 'OSDO Container Scan'
-description: 'Scan container images for vulnerabilities'
-author: 'OpenSecDevOps'
+name: "OSDO Container Security Scan"
+description: "Comprehensive container security scanning including image vulnerabilities, Dockerfile linting, and SBOM generation"
+author: "OpenSecDevOps"
 
 inputs:
-  image:
-    description: 'Container image to scan'
+  image-name:
+    description: "Container image name to scan"
     required: true
-  severity:
-    description: 'Minimum severity to report (LOW, MEDIUM, HIGH, CRITICAL)'
+  image-tag:
+    description: "Container image tag"
     required: false
-    default: 'MEDIUM'
-  fail-on-finding:
-    description: 'Fail the action if vulnerabilities are found'
+    default: "latest"
+  dockerfile-path:
+    description: "Path to Dockerfile for linting"
     required: false
-    default: 'true'
+    default: "./Dockerfile"
+  scanners:
+    description: "Scanners to use (trivy, grype, all)"
+    required: false
+    default: "trivy"
+  enable-dockerfile-lint:
+    description: "Enable Dockerfile linting with Hadolint"
+    required: false
+    default: "true"
+  enable-sbom:
+    description: "Generate SBOM for container"
+    required: false
+    default: "false"
+  severity-threshold:
+    description: "Minimum severity to report (LOW, MEDIUM, HIGH, CRITICAL)"
+    required: false
+    default: "MEDIUM"
+  fail-on-critical:
+    description: "Fail if critical vulnerabilities found"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
 
 outputs:
-  findings:
-    description: 'Number of vulnerabilities found'
-    value: ${{ steps.scan.outputs.findings }}
+  vulnerabilities-found:
+    description: "Total vulnerabilities found"
+    value: ${{ steps.aggregate.outputs.total-vulns }}
+  critical-count:
+    description: "Critical vulnerabilities count"
+    value: ${{ steps.aggregate.outputs.critical }}
+  high-count:
+    description: "High vulnerabilities count"
+    value: ${{ steps.aggregate.outputs.high }}
+  dockerfile-issues:
+    description: "Dockerfile linting issues found"
+    value: ${{ steps.dockerfile-lint.outputs.issues }}
+  sbom-path:
+    description: "Path to generated SBOM"
+    value: ${{ steps.sbom.outputs.path }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
-    - name: Container Scan
-      id: scan
+    - name: Create results directory
       shell: bash
       run: |
-        echo "Running container scan on ${{ inputs.image }}"
-        echo "findings=0" >> $GITHUB_OUTPUT
+        mkdir -p ${{ inputs.results-dir }}/container
+        echo "Results will be stored in ${{ inputs.results-dir }}/container"
+
+    - name: Dockerfile Security Linting
+      if: inputs.enable-dockerfile-lint == 'true'
+      id: dockerfile-lint
+      shell: bash
+      run: |
+        echo "🔍 Linting Dockerfile with Hadolint..."
+
+        if [ ! -f "${{ inputs.dockerfile-path }}" ]; then
+          echo "⚠️  Dockerfile not found at ${{ inputs.dockerfile-path }}"
+          echo "issues=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Install Hadolint if not available
+        if ! command -v hadolint &> /dev/null; then
+          wget -qO /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x /usr/local/bin/hadolint
+        fi
+
+        # Run Hadolint
+        hadolint --format json ${{ inputs.dockerfile-path }} > ${{ inputs.results-dir }}/container/hadolint.json || true
+
+        # Count issues
+        issues=$(jq '. | length' ${{ inputs.results-dir }}/container/hadolint.json 2>/dev/null || echo "0")
+        echo "issues=$issues" >> $GITHUB_OUTPUT
+
+        if [ "$issues" -gt 0 ]; then
+          echo "⚠️  Found $issues Dockerfile issues"
+          jq -r '.[] | "  - \(.code): \(.message) (line \(.line))"' ${{ inputs.results-dir }}/container/hadolint.json || true
+        else
+          echo "✅ Dockerfile passed all checks"
+        fi
+
+    - name: Trivy Container Scan
+      if: contains(inputs.scanners, 'trivy') || contains(inputs.scanners, 'all')
+      id: trivy
+      shell: bash
+      run: |
+        echo "🔍 Scanning with Trivy..."
+
+        # Install Trivy if not available
+        if ! command -v trivy &> /dev/null; then
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy -y
+        fi
+
+        # Run Trivy scan
+        trivy image \
+          --format json \
+          --output ${{ inputs.results-dir }}/container/trivy.json \
+          --severity ${{ inputs.severity-threshold }},CRITICAL \
+          ${{ inputs.image-name }}:${{ inputs.image-tag }} || true
+
+        # Extract vulnerability counts
+        critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+        high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+        total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+
+        echo "trivy-critical=$critical" >> $GITHUB_OUTPUT
+        echo "trivy-high=$high" >> $GITHUB_OUTPUT
+        echo "trivy-total=$total" >> $GITHUB_OUTPUT
+
+        echo "📊 Trivy found: $total vulnerabilities ($critical critical, $high high)"
+
+    - name: Grype Container Scan
+      if: contains(inputs.scanners, 'grype') || contains(inputs.scanners, 'all')
+      id: grype
+      shell: bash
+      run: |
+        echo "🔍 Scanning with Grype..."
+
+        # Install Grype
+        if ! command -v grype &> /dev/null; then
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+        fi
+
+        # Run Grype scan
+        grype ${{ inputs.image-name }}:${{ inputs.image-tag }} \
+          -o json \
+          --file ${{ inputs.results-dir }}/container/grype.json || true
+
+        # Extract counts
+        critical=$(jq '[.matches[]? | select(.vulnerability.severity=="Critical")] | length' ${{ inputs.results-dir }}/container/grype.json 2>/dev/null || echo "0")
+        high=$(jq '[.matches[]? | select(.vulnerability.severity=="High")] | length' ${{ inputs.results-dir }}/container/grype.json 2>/dev/null || echo "0")
+        total=$(jq '.matches | length' ${{ inputs.results-dir }}/container/grype.json 2>/dev/null || echo "0")
+
+        echo "grype-critical=$critical" >> $GITHUB_OUTPUT
+        echo "grype-high=$high" >> $GITHUB_OUTPUT
+        echo "grype-total=$total" >> $GITHUB_OUTPUT
+
+        echo "📊 Grype found: $total vulnerabilities ($critical critical, $high high)"
+
+    - name: Generate Container SBOM
+      if: inputs.enable-sbom == 'true'
+      id: sbom
+      shell: bash
+      run: |
+        echo "📦 Generating SBOM..."
+
+        # Install Syft if not available
+        if ! command -v syft &> /dev/null; then
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+        fi
+
+        # Generate SBOM
+        syft ${{ inputs.image-name }}:${{ inputs.image-tag }} \
+          -o spdx-json \
+          --file ${{ inputs.results-dir }}/container/sbom-spdx.json
+
+        echo "path=${{ inputs.results-dir }}/container/sbom-spdx.json" >> $GITHUB_OUTPUT
+        echo "✅ SBOM generated successfully"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating scan results..."
+
+        total=0
+        critical=0
+        high=0
+
+        # Aggregate Trivy results
+        if [ -f "${{ inputs.results-dir }}/container/trivy.json" ]; then
+          trivy_total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+          trivy_critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+          trivy_high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' ${{ inputs.results-dir }}/container/trivy.json 2>/dev/null || echo "0")
+          
+          total=$((total + trivy_total))
+          critical=$((critical + trivy_critical))
+          high=$((high + trivy_high))
+        fi
+
+        # Aggregate Grype results (if run)
+        if [ -f "${{ inputs.results-dir }}/container/grype.json" ]; then
+          grype_critical=$(jq '[.matches[]? | select(.vulnerability.severity=="Critical")] | length' ${{ inputs.results-dir }}/container/grype.json 2>/dev/null || echo "0")
+          grype_high=$(jq '[.matches[]? | select(.vulnerability.severity=="High")] | length' ${{ inputs.results-dir }}/container/grype.json 2>/dev/null || echo "0")
+          
+          # Use max to avoid double-counting
+          critical=$((critical > grype_critical ? critical : grype_critical))
+          high=$((high > grype_high ? high : grype_high))
+        fi
+
+        echo "total-vulns=$total" >> $GITHUB_OUTPUT
+        echo "critical=$critical" >> $GITHUB_OUTPUT
+        echo "high=$high" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  Container Security Scan Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Image: ${{ inputs.image-name }}:${{ inputs.image-tag }}"
+        echo "  Total Vulnerabilities: $total"
+        echo "  Critical: $critical"
+        echo "  High: $high"
+        echo "  Dockerfile Issues: ${{ steps.dockerfile-lint.outputs.issues || 0 }}"
+        echo "═══════════════════════════════════════"
+
+    - name: Check Critical Threshold
+      if: inputs.fail-on-critical == 'true'
+      shell: bash
+      run: |
+        critical=${{ steps.aggregate.outputs.critical }}
+
+        if [ "$critical" -gt 0 ]; then
+          echo "❌ Found $critical critical vulnerabilities"
+          echo "::error::Critical vulnerabilities found in container image"
+          exit 1
+        fi
+
+        echo "✅ No critical vulnerabilities found"

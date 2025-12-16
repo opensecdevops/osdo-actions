@@ -1,0 +1,124 @@
+name: 'OSDO Test Quality Gate'
+description: 'Execute comprehensive testing and quality checks for OSDO compliance'
+inputs:
+  test-coverage-threshold:
+    description: 'Minimum test coverage percentage'
+    required: false
+    default: '80'
+  enable-unit-tests:
+    description: 'Enable unit tests'
+    required: false
+    default: 'true'
+  enable-integration-tests:
+    description: 'Enable integration tests'
+    required: false
+    default: 'true'
+  enable-e2e-tests:
+    description: 'Enable end-to-end tests'
+    required: false
+    default: 'false'
+  enable-code-quality:
+    description: 'Enable code quality checks'
+    required: false
+    default: 'true'
+
+outputs:
+  test-results:
+    description: 'Test results summary'
+    value: ${{ steps.summary.outputs.results }}
+  coverage-percentage:
+    description: 'Code coverage percentage'
+    value: ${{ steps.coverage.outputs.percentage }}
+  quality-score:
+    description: 'Overall quality score'
+    value: ${{ steps.quality.outputs.score }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ -f package.json ]; then
+          npm ci
+        elif [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        elif [ -f Pipfile ]; then
+          pip install pipenv && pipenv install --dev
+        fi
+
+    - name: Run unit tests
+      if: inputs.enable-unit-tests == 'true'
+      shell: bash
+      run: |
+        if [ -f package.json ]; then
+          npm run test -- --coverage --reporter=json --outputFile=$OSDO_RESULTS_DIR/unit-tests.json
+        elif [ -f pytest.ini ] || [ -f pyproject.toml ]; then
+          pytest --cov --cov-report=json:$OSDO_RESULTS_DIR/coverage.json --json-report --json-report-file=$OSDO_RESULTS_DIR/unit-tests.json
+        fi
+
+    - name: Run integration tests
+      if: inputs.enable-integration-tests == 'true'
+      shell: bash
+      run: |
+        if [ -f package.json ] && npm run | grep -q "test:integration"; then
+          npm run test:integration -- --reporter=json --outputFile=$OSDO_RESULTS_DIR/integration-tests.json
+        fi
+
+    - name: Run E2E tests
+      if: inputs.enable-e2e-tests == 'true'
+      shell: bash
+      run: |
+        if [ -f package.json ] && npm run | grep -q "test:e2e"; then
+          npm run test:e2e -- --reporter=json --outputFile=$OSDO_RESULTS_DIR/e2e-tests.json
+        fi
+
+    - name: Code quality analysis
+      if: inputs.enable-code-quality == 'true'
+      shell: bash
+      run: |
+        # SonarJS for JavaScript/TypeScript
+        if [ -f package.json ]; then
+          npx sonarjs-verify . > $OSDO_RESULTS_DIR/sonarjs-report.json || true
+        fi
+        
+        # Pylint for Python
+        if [ -f requirements.txt ] || [ -f setup.py ]; then
+          pylint --output-format=json . > $OSDO_RESULTS_DIR/pylint-report.json || true
+        fi
+
+    - name: Calculate coverage
+      shell: bash
+      id: coverage
+      run: |
+        coverage=0
+        if [ -f $OSDO_RESULTS_DIR/coverage.json ]; then
+          coverage=$(jq -r '.totals.percent_covered' $OSDO_RESULTS_DIR/coverage.json 2>/dev/null || echo "0")
+        fi
+        echo "percentage=$coverage" >> $GITHUB_OUTPUT
+        
+        # Check coverage threshold
+        if (( $(echo "$coverage < ${{ inputs.test-coverage-threshold }}" | bc -l) )); then
+          echo "::warning::Coverage $coverage% is below threshold ${{ inputs.test-coverage-threshold }}%"
+        fi
+
+    - name: Generate quality score
+      shell: bash
+      id: quality
+      run: |
+        # Simple quality scoring algorithm
+        score=100
+        
+        # Reduce score for low coverage
+        coverage=${{ steps.coverage.outputs.percentage }}
+        if (( $(echo "$coverage < 80" | bc -l) )); then
+          score=$((score - 20))
+        fi
+        
+        echo "score=$score" >> $GITHUB_OUTPUT
+
+    - name: Generate test summary
+      shell: bash
+      id: summary
+      run: |
+        echo "results=Tests completed with ${{ steps.coverage.outputs.percentage }}% coverage" >> $GITHUB_OUTPUT

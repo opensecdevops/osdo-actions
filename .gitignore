@@ -1,0 +1,60 @@
+.DS_Store
+node_modules
+dist
+.npm
+
+# OSDO Compliance Reports
+reports/
+*.log
+npm-audit-report.json
+eslint-report.json
+eslint-security-report.json
+gitleaks-report.json
+hadolint-report.json
+trivy-report.json
+sbom.json
+sbom.xml
+compliance-report.md
+
+# Security sensitive files (ejemplos)
+.env
+.env.local
+.env.production
+.env.staging
+*.key
+*.pem
+*.p12
+*.pfx
+
+logs
+# Logs
+npm-debug.log*
+yarn-debug.log*
+# Dependency directories
+jspm_packages/
+# Optional npm cache directory
+.npm
+# Optional eslint cache
+.eslintcache
+# Optional REPL history
+.repl_history
+# Coverage directory used by tools like istanbul
+coverage/
+# nyc test coverage
+.nyc_output/
+# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+.grunt
+# Bower dependency directory (https://bower.io/)
+bower_components/
+# node-waf configuration
+.node-waf
+# Compiled binary addons (https://nodejs.org/api/addons.html)
+build/Release
+# Dependency directories
+jspm_packages/
+# TypeScript v1 declaration files
+typings/
+# OSDO results directory
+.osdo/results
+.osdo/test-results
+.vscode

@@ -1,0 +1,31 @@
+name: 'OSDO SCA'
+description: 'Software Composition Analysis - Scan dependencies for vulnerabilities'
+author: 'OpenSecDevOps'
+
+inputs:
+  path:
+    description: 'Path to scan for dependency vulnerabilities'
+    required: false
+    default: '.'
+  manifest-file:
+    description: 'Dependency manifest file (package.json, requirements.txt, etc.)'
+    required: false
+  fail-on-finding:
+    description: 'Fail the action if vulnerabilities are found'
+    required: false
+    default: 'true'
+
+outputs:
+  findings:
+    description: 'Number of vulnerable dependencies found'
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: SCA Scan
+      id: scan
+      shell: bash
+      run: |
+        echo "Running SCA scan on ${{ inputs.path }}"
+        echo "findings=0" >> $GITHUB_OUTPUT

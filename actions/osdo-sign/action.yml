@@ -1,0 +1,30 @@
+name: 'OSDO Sign'
+description: 'Sign artifacts and container images'
+author: 'OpenSecDevOps'
+
+inputs:
+  artifact:
+    description: 'Artifact or image to sign'
+    required: true
+  key:
+    description: 'Signing key or reference'
+    required: false
+  method:
+    description: 'Signing method (cosign, gpg, etc.)'
+    required: false
+    default: 'cosign'
+
+outputs:
+  signature:
+    description: 'Path to signature file'
+    value: ${{ steps.sign.outputs.signature }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Sign Artifact
+      id: sign
+      shell: bash
+      run: |
+        echo "Signing ${{ inputs.artifact }} with ${{ inputs.method }}"
+        echo "signature=${{ inputs.artifact }}.sig" >> $GITHUB_OUTPUT

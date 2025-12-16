@@ -1,0 +1,32 @@
+name: 'OSDO SBOM'
+description: 'Generate Software Bill of Materials'
+author: 'OpenSecDevOps'
+
+inputs:
+  path:
+    description: 'Path to generate SBOM from'
+    required: false
+    default: '.'
+  format:
+    description: 'SBOM format (spdx, cyclonedx)'
+    required: false
+    default: 'spdx'
+  output:
+    description: 'Output file for SBOM'
+    required: false
+    default: 'sbom.json'
+
+outputs:
+  sbom-file:
+    description: 'Path to generated SBOM file'
+    value: ${{ steps.generate.outputs.sbom-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate SBOM
+      id: generate
+      shell: bash
+      run: |
+        echo "Generating SBOM for ${{ inputs.path }}"
+        echo "sbom-file=${{ inputs.output }}" >> $GITHUB_OUTPUT

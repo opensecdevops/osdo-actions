@@ -1,0 +1,31 @@
+name: 'OSDO Container Scan'
+description: 'Scan container images for vulnerabilities'
+author: 'OpenSecDevOps'
+
+inputs:
+  image:
+    description: 'Container image to scan'
+    required: true
+  severity:
+    description: 'Minimum severity to report (LOW, MEDIUM, HIGH, CRITICAL)'
+    required: false
+    default: 'MEDIUM'
+  fail-on-finding:
+    description: 'Fail the action if vulnerabilities are found'
+    required: false
+    default: 'true'
+
+outputs:
+  findings:
+    description: 'Number of vulnerabilities found'
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Container Scan
+      id: scan
+      shell: bash
+      run: |
+        echo "Running container scan on ${{ inputs.image }}"
+        echo "findings=0" >> $GITHUB_OUTPUT

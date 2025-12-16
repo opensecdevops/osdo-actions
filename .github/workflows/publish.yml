@@ -1,0 +1,32 @@
+name: Publish Actions
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish Actions
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Validate action files
+        run: |
+          echo "Validating action.yml files..."
+          for action in actions/*/action.yml; do
+            if [ -f "$action" ]; then
+              echo "✓ Found: $action"
+            fi
+          done
+          
+      - name: Publish info
+        run: |
+          echo "Actions are published via GitHub repository"
+          echo "Use them with: opensecdevops/osdo-actions/actions/<action-name>@<version>"

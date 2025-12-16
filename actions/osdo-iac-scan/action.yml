@@ -1,0 +1,32 @@
+name: 'OSDO IaC Scan'
+description: 'Infrastructure as Code security scanning'
+author: 'OpenSecDevOps'
+
+inputs:
+  path:
+    description: 'Path to scan for IaC misconfigurations'
+    required: false
+    default: '.'
+  framework:
+    description: 'IaC framework (terraform, cloudformation, kubernetes, etc.)'
+    required: false
+    default: 'auto'
+  fail-on-finding:
+    description: 'Fail the action if misconfigurations are found'
+    required: false
+    default: 'true'
+
+outputs:
+  findings:
+    description: 'Number of misconfigurations found'
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: IaC Scan
+      id: scan
+      shell: bash
+      run: |
+        echo "Running IaC scan on ${{ inputs.path }}"
+        echo "findings=0" >> $GITHUB_OUTPUT

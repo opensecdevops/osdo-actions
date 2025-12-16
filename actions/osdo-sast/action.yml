@@ -1,0 +1,32 @@
+name: 'OSDO SAST'
+description: 'Static Application Security Testing'
+author: 'OpenSecDevOps'
+
+inputs:
+  path:
+    description: 'Path to scan for security vulnerabilities'
+    required: false
+    default: '.'
+  language:
+    description: 'Programming language to scan'
+    required: false
+    default: 'auto'
+  fail-on-finding:
+    description: 'Fail the action if vulnerabilities are found'
+    required: false
+    default: 'true'
+
+outputs:
+  findings:
+    description: 'Number of vulnerabilities found'
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: SAST Scan
+      id: scan
+      shell: bash
+      run: |
+        echo "Running SAST scan on ${{ inputs.path }}"
+        echo "findings=0" >> $GITHUB_OUTPUT

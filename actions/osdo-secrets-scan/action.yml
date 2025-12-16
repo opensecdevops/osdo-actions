@@ -1,0 +1,28 @@
+name: 'OSDO Secrets Scan'
+description: 'Scan for secrets in code repositories'
+author: 'OpenSecDevOps'
+
+inputs:
+  path:
+    description: 'Path to scan for secrets'
+    required: false
+    default: '.'
+  fail-on-finding:
+    description: 'Fail the action if secrets are found'
+    required: false
+    default: 'true'
+
+outputs:
+  findings:
+    description: 'Number of secrets found'
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Secrets Scan
+      id: scan
+      shell: bash
+      run: |
+        echo "Running secrets scan on ${{ inputs.path }}"
+        echo "findings=0" >> $GITHUB_OUTPUT

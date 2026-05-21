@@ -1,0 +1,131 @@
+name: Publish Actions to Individual Repos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'actions/**'
+
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Specific action to publish (e.g., osdo-sast). Leave empty for all changed.'
+        required: false
+        type: string
+      force:
+        description: 'Force publish even if no changes detected'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      actions: ${{ steps.changes.outputs.actions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed actions
+        id: changes
+        run: |
+          if [ -n "${{ inputs.action }}" ]; then
+            echo "actions=[\"${{ inputs.action }}\"]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ACTIONS=$(ls actions/ | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "actions=$ACTIONS" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- actions/ | \
+            cut -d'/' -f2 | sort -u | \
+            jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "actions=$CHANGED" >> $GITHUB_OUTPUT
+          echo "Changed actions: $CHANGED"
+
+  publish:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.actions != '[]' && needs.detect-changes.outputs.actions != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        action: ${{ fromJson(needs.detect-changes.outputs.actions) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+
+      - name: Check if target repo exists
+        id: check-repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          if gh repo view "opensecdevops/${{ matrix.action }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::Repo opensecdevops/${{ matrix.action }} does not exist. Skipping."
+          fi
+
+      - name: Publish to individual repo
+        if: steps.check-repo.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          ACTION="${{ matrix.action }}"
+          TARGET_REPO="opensecdevops/$ACTION"
+          SOURCE_DIR="actions/$ACTION"
+
+          echo "Publishing $SOURCE_DIR → $TARGET_REPO"
+
+          # Clone the target repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO.git" /tmp/target
+          cd /tmp/target
+
+          git config user.name "OSDO Bot"
+          git config user.email "bot@opensecdevops.org"
+
+          # Determine default branch
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+
+          # Remove old action files (keep .git, README, LICENSE, CHANGELOG)
+          find . -maxdepth 1 ! -name '.git' ! -name 'README.md' ! -name 'LICENSE' \
+            ! -name 'CHANGELOG.md' ! -name '.' -exec rm -rf {} \;
+
+          # Copy new action files from monorepo
+          cp -r "$GITHUB_WORKSPACE/$SOURCE_DIR"/* . 2>/dev/null || true
+          cp -r "$GITHUB_WORKSPACE/$SOURCE_DIR"/.[!.]* . 2>/dev/null || true
+
+          # Check for changes
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes for $ACTION"
+            exit 0
+          fi
+
+          # Read version from action.yml if present
+          VERSION=""
+          if [ -f action.yml ]; then
+            # Try to extract version from description or branding
+            VERSION=$(grep -oP "v\d+\.\d+\.\d+" action.yml | head -1 || true)
+          fi
+
+          # Commit and push
+          git commit -m "chore: sync from osdo-actions monorepo
+
+          Auto-published from opensecdevops/osdo-actions.
+          Source: actions/$ACTION/"
+
+          git push origin "$DEFAULT_BRANCH"
+
+          echo "✅ Published $ACTION to $TARGET_REPO"

@@ -1,32 +1,225 @@
-name: 'OSDO SBOM'
-description: 'Generate Software Bill of Materials'
-author: 'OpenSecDevOps'
+name: "OSDO SBOM"
+description: "Generate Software Bill of Materials (SBOM) in SPDX and CycloneDX formats using Syft"
+author: "OpenSecDevOps"
 
 inputs:
   path:
-    description: 'Path to generate SBOM from'
+    description: "Path to generate SBOM from (directory or container image)"
     required: false
-    default: '.'
+    default: "."
+  source-type:
+    description: "Source type (directory, image, archive)"
+    required: false
+    default: "directory"
   format:
-    description: 'SBOM format (spdx, cyclonedx)'
+    description: "SBOM format (spdx-json, cyclonedx-json, spdx-tag-value, both)"
     required: false
-    default: 'spdx'
-  output:
-    description: 'Output file for SBOM'
+    default: "both"
+  output-prefix:
+    description: "Output file prefix"
     required: false
-    default: 'sbom.json'
+    default: "sbom"
+  include-dev-deps:
+    description: "Include development dependencies"
+    required: false
+    default: "false"
+  validate:
+    description: "Validate generated SBOM"
+    required: false
+    default: "true"
+  upload-artifact:
+    description: "Upload SBOM as GitHub artifact"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
 
 outputs:
-  sbom-file:
-    description: 'Path to generated SBOM file'
-    value: ${{ steps.generate.outputs.sbom-file }}
+  sbom-spdx-file:
+    description: "Path to SPDX SBOM file"
+    value: ${{ steps.generate.outputs.spdx-path }}
+  sbom-cyclonedx-file:
+    description: "Path to CycloneDX SBOM file"
+    value: ${{ steps.generate.outputs.cyclonedx-path }}
+  sbom-hash:
+    description: "SHA256 hash of the primary SBOM"
+    value: ${{ steps.generate.outputs.sbom-hash }}
+  packages-count:
+    description: "Number of packages in SBOM"
+    value: ${{ steps.analyze.outputs.packages }}
+  valid:
+    description: "Whether SBOM passed validation"
+    value: ${{ steps.validate.outputs.valid }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/sbom
+        echo "Results will be stored in ${{ inputs.results-dir }}/sbom"
+
+    - name: Install Syft
+      shell: bash
+      run: |
+        if ! command -v syft &> /dev/null; then
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+        fi
+        syft version
+
     - name: Generate SBOM
       id: generate
       shell: bash
       run: |
-        echo "Generating SBOM for ${{ inputs.path }}"
-        echo "sbom-file=${{ inputs.output }}" >> $GITHUB_OUTPUT
+        echo "📦 Generating SBOM..."
+
+        # Determine source
+        case "${{ inputs.source-type }}" in
+          "image")
+            source="${{ inputs.path }}"
+            ;;
+          "archive")
+            source="file:${{ inputs.path }}"
+            ;;
+          *)
+            source="dir:${{ inputs.path }}"
+            ;;
+        esac
+
+        # Generate SPDX
+        if [[ "${{ inputs.format }}" == "spdx-json" ]] || [[ "${{ inputs.format }}" == "both" ]]; then
+          echo "Generating SPDX 2.3 JSON..."
+          syft "$source" \
+            -o spdx-json \
+            --file ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json
+          
+          echo "spdx-path=${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json" >> $GITHUB_OUTPUT
+        fi
+
+        # Generate CycloneDX
+        if [[ "${{ inputs.format }}" == "cyclonedx-json" ]] || [[ "${{ inputs.format }}" == "both" ]]; then
+          echo "Generating CycloneDX 1.5 JSON..."
+          syft "$source" \
+            -o cyclonedx-json \
+            --file ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json
+          
+          echo "cyclonedx-path=${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json" >> $GITHUB_OUTPUT
+        fi
+
+        # Generate SPDX tag-value (human readable)
+        if [[ "${{ inputs.format }}" == "spdx-tag-value" ]]; then
+          echo "Generating SPDX tag-value..."
+          syft "$source" \
+            -o spdx-tag-value \
+            --file ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}.spdx
+          
+          echo "spdx-path=${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}.spdx" >> $GITHUB_OUTPUT
+        fi
+
+        # Calculate hash of primary SBOM
+        if [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json" ]; then
+          hash=$(sha256sum ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json | awk '{print $1}')
+        elif [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json" ]; then
+          hash=$(sha256sum ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json | awk '{print $1}')
+        else
+          hash="none"
+        fi
+
+        echo "sbom-hash=$hash" >> $GITHUB_OUTPUT
+        echo "📦 SBOM generated with hash: $hash"
+
+    - name: Analyze SBOM
+      id: analyze
+      shell: bash
+      run: |
+        echo "📊 Analyzing SBOM contents..."
+
+        packages=0
+        licenses=""
+
+        # Analyze SPDX
+        if [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json" ]; then
+          packages=$(jq '.packages | length' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json 2>/dev/null || echo "0")
+          licenses=$(jq -r '[.packages[].licenseConcluded // "NOASSERTION"] | unique | join(", ")' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json 2>/dev/null | head -c 200)
+        # Analyze CycloneDX
+        elif [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json" ]; then
+          packages=$(jq '.components | length' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json 2>/dev/null || echo "0")
+          licenses=$(jq -r '[.components[].licenses[]?.license.id // "unknown"] | unique | join(", ")' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json 2>/dev/null | head -c 200)
+        fi
+
+        echo "packages=$packages" >> $GITHUB_OUTPUT
+        echo "licenses=$licenses" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  OSDO SBOM Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Source: ${{ inputs.path }}"
+        echo "  Format: ${{ inputs.format }}"
+        echo "  Total Packages: $packages"
+        echo "  Unique Licenses: $(echo $licenses | tr ',' '\n' | wc -l | tr -d ' ')"
+        echo "═══════════════════════════════════════"
+
+    - name: Validate SBOM
+      if: inputs.validate == 'true'
+      id: validate
+      shell: bash
+      run: |
+        echo "🔍 Validating SBOM..."
+
+        valid="true"
+        errors=""
+
+        # Validate SPDX
+        if [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json" ]; then
+          # Check required fields
+          spdx_version=$(jq -r '.spdxVersion' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json 2>/dev/null)
+          if [ -z "$spdx_version" ] || [ "$spdx_version" == "null" ]; then
+            valid="false"
+            errors="Missing spdxVersion"
+          fi
+
+          # Check for document namespace
+          doc_namespace=$(jq -r '.documentNamespace' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-spdx.json 2>/dev/null)
+          if [ -z "$doc_namespace" ] || [ "$doc_namespace" == "null" ]; then
+            valid="false"
+            errors="$errors, Missing documentNamespace"
+          fi
+        fi
+
+        # Validate CycloneDX
+        if [ -f "${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json" ]; then
+          # Check required fields
+          bom_format=$(jq -r '.bomFormat' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json 2>/dev/null)
+          if [ "$bom_format" != "CycloneDX" ]; then
+            valid="false"
+            errors="$errors, Invalid bomFormat"
+          fi
+
+          spec_version=$(jq -r '.specVersion' ${{ inputs.results-dir }}/sbom/${{ inputs.output-prefix }}-cyclonedx.json 2>/dev/null)
+          if [ -z "$spec_version" ] || [ "$spec_version" == "null" ]; then
+            valid="false"
+            errors="$errors, Missing specVersion"
+          fi
+        fi
+
+        echo "valid=$valid" >> $GITHUB_OUTPUT
+
+        if [ "$valid" == "true" ]; then
+          echo "✅ SBOM validation passed"
+        else
+          echo "❌ SBOM validation failed: $errors"
+          echo "::warning::SBOM validation issues: $errors"
+        fi
+
+    - name: Upload SBOM Artifacts
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: osdo-sbom
+        path: ${{ inputs.results-dir }}/sbom/
+        retention-days: 90
+        if-no-files-found: warn

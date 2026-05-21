@@ -1,0 +1,436 @@
+name: "OSDO Fuzz Testing"
+description: "Fuzz testing for security vulnerability discovery using OSS-Fuzz, AFL++, and language-specific fuzzers"
+author: "OpenSecDevOps"
+
+inputs:
+  target-path:
+    description: "Path to code or fuzz targets"
+    required: false
+    default: "."
+  language:
+    description: "Programming language (auto, go, python, javascript, rust, c, cpp)"
+    required: false
+    default: "auto"
+  fuzzer:
+    description: "Fuzzer to use (oss-fuzz, afl, atheris, jazzer, cargo-fuzz, auto)"
+    required: false
+    default: "auto"
+  fuzz-time:
+    description: "Fuzzing duration in seconds"
+    required: false
+    default: "300"
+  corpus-path:
+    description: "Path to seed corpus"
+    required: false
+    default: ""
+  fuzz-targets:
+    description: "Comma-separated list of fuzz target names"
+    required: false
+    default: ""
+  sanitizers:
+    description: "Sanitizers to enable (address, memory, undefined, thread)"
+    required: false
+    default: "address"
+  fail-on-crash:
+    description: "Fail the action if crashes are found"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  crashes-found:
+    description: "Number of crashes found"
+    value: ${{ steps.aggregate.outputs.crashes }}
+  coverage:
+    description: "Code coverage percentage"
+    value: ${{ steps.aggregate.outputs.coverage }}
+  unique-crashes:
+    description: "Number of unique crash signatures"
+    value: ${{ steps.aggregate.outputs.unique-crashes }}
+  fuzz-targets-run:
+    description: "Number of fuzz targets executed"
+    value: ${{ steps.aggregate.outputs.targets }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/fuzz/crashes
+        mkdir -p ${{ inputs.results-dir }}/fuzz/corpus
+        echo "Results will be stored in ${{ inputs.results-dir }}/fuzz"
+
+    - name: Detect Language and Fuzzer
+      id: detect
+      shell: bash
+      run: |
+        cd ${{ inputs.target-path }}
+
+        # Auto-detect language
+        lang="${{ inputs.language }}"
+        if [ "$lang" == "auto" ]; then
+          if [ -f "go.mod" ]; then
+            lang="go"
+          elif [ -f "Cargo.toml" ]; then
+            lang="rust"
+          elif [ -f "package.json" ]; then
+            lang="javascript"
+          elif [ -f "requirements.txt" ] || [ -f "setup.py" ]; then
+            lang="python"
+          elif ls *.c >/dev/null 2>&1 || ls *.cpp >/dev/null 2>&1; then
+            lang="c"
+          fi
+        fi
+
+        # Select appropriate fuzzer
+        fuzzer="${{ inputs.fuzzer }}"
+        if [ "$fuzzer" == "auto" ]; then
+          case "$lang" in
+            "go") fuzzer="go-fuzz" ;;
+            "rust") fuzzer="cargo-fuzz" ;;
+            "python") fuzzer="atheris" ;;
+            "javascript") fuzzer="jsfuzz" ;;
+            "c"|"cpp") fuzzer="afl" ;;
+            *) fuzzer="afl" ;;
+          esac
+        fi
+
+        echo "language=$lang" >> $GITHUB_OUTPUT
+        echo "fuzzer=$fuzzer" >> $GITHUB_OUTPUT
+        echo "📋 Language: $lang, Fuzzer: $fuzzer"
+
+    - name: Go Fuzz Testing
+      if: steps.detect.outputs.language == 'go'
+      id: go-fuzz
+      shell: bash
+      run: |
+        echo "🔍 Running Go fuzz testing..."
+        cd ${{ inputs.target-path }}
+
+        crashes=0
+        targets=0
+
+        # Find fuzz targets
+        fuzz_targets=$(grep -r "func Fuzz" --include="*_test.go" -l 2>/dev/null || true)
+
+        for file in $fuzz_targets; do
+          # Extract fuzz function names
+          funcs=$(grep -o "func Fuzz[A-Za-z0-9_]*" "$file" | sed 's/func //')
+          
+          for func in $funcs; do
+            targets=$((targets + 1))
+            echo "Running fuzz target: $func"
+            
+            # Run Go's native fuzzing
+            timeout ${{ inputs.fuzz-time }}s go test -fuzz="$func" -fuzztime=${{ inputs.fuzz-time }}s \
+              -coverprofile=${{ inputs.results-dir }}/fuzz/coverage_${func}.out \
+              ./... 2>&1 | tee -a ${{ inputs.results-dir }}/fuzz/go-fuzz.log || {
+                # Check if it was a crash or timeout
+                if [ $? -ne 124 ]; then
+                  crashes=$((crashes + 1))
+                  echo "💥 Crash found in $func"
+                fi
+              }
+          done
+        done
+
+        echo "go-crashes=$crashes" >> $GITHUB_OUTPUT
+        echo "go-targets=$targets" >> $GITHUB_OUTPUT
+        echo "📊 Go fuzz: $targets targets, $crashes crashes"
+
+    - name: Python Atheris Fuzz Testing
+      if: steps.detect.outputs.language == 'python'
+      id: python-fuzz
+      shell: bash
+      run: |
+        echo "🔍 Running Python Atheris fuzz testing..."
+        cd ${{ inputs.target-path }}
+
+        # Install Atheris
+        pip install atheris coverage --quiet
+
+        crashes=0
+        targets=0
+
+        # Find fuzz targets (files with fuzz_ prefix or @atheris decorator)
+        fuzz_files=$(find . -name "fuzz_*.py" -o -name "*_fuzz.py" 2>/dev/null || true)
+
+        # If no explicit fuzz targets, create a generic one
+        if [ -z "$fuzz_files" ]; then
+          echo "No fuzz targets found, creating generic fuzzer..."
+          
+          cat > ${{ inputs.results-dir }}/fuzz/generic_fuzz.py << 'EOF'
+        import atheris
+        import sys
+
+        def test_one_input(data):
+            # Generic fuzzing - import and test main module
+            try:
+                fdp = atheris.FuzzedDataProvider(data)
+                # Add your target code here
+                pass
+            except Exception:
+                pass
+
+        if __name__ == "__main__":
+            atheris.Setup(sys.argv, test_one_input)
+            atheris.Fuzz()
+        EOF
+          fuzz_files="${{ inputs.results-dir }}/fuzz/generic_fuzz.py"
+        fi
+
+        for file in $fuzz_files; do
+          if [ -f "$file" ]; then
+            targets=$((targets + 1))
+            echo "Running fuzz target: $file"
+            
+            timeout ${{ inputs.fuzz-time }}s python "$file" \
+              -atheris_runs=$(({{ inputs.fuzz-time }} * 1000)) \
+              2>&1 | tee -a ${{ inputs.results-dir }}/fuzz/python-fuzz.log || {
+                if [ $? -ne 124 ]; then
+                  crashes=$((crashes + 1))
+                fi
+              }
+          fi
+        done
+
+        echo "python-crashes=$crashes" >> $GITHUB_OUTPUT
+        echo "python-targets=$targets" >> $GITHUB_OUTPUT
+        echo "📊 Python fuzz: $targets targets, $crashes crashes"
+
+    - name: Rust Cargo Fuzz Testing
+      if: steps.detect.outputs.language == 'rust'
+      id: rust-fuzz
+      shell: bash
+      run: |
+        echo "🔍 Running Rust cargo-fuzz testing..."
+        cd ${{ inputs.target-path }}
+
+        # Install cargo-fuzz
+        cargo install cargo-fuzz || true
+
+        crashes=0
+        targets=0
+
+        # Check for fuzz targets
+        if [ -d "fuzz" ]; then
+          for target in $(cargo fuzz list 2>/dev/null || true); do
+            targets=$((targets + 1))
+            echo "Running fuzz target: $target"
+            
+            timeout ${{ inputs.fuzz-time }}s cargo fuzz run "$target" \
+              --sanitizer=${{ inputs.sanitizers }} \
+              -- -max_total_time=${{ inputs.fuzz-time }} \
+              2>&1 | tee -a ${{ inputs.results-dir }}/fuzz/rust-fuzz.log || {
+                if [ $? -ne 124 ]; then
+                  crashes=$((crashes + 1))
+                  # Copy crash files
+                  cp fuzz/artifacts/"$target"/* ${{ inputs.results-dir }}/fuzz/crashes/ 2>/dev/null || true
+                fi
+              }
+          done
+        else
+          echo "No fuzz directory found. Run 'cargo fuzz init' to set up fuzzing."
+        fi
+
+        echo "rust-crashes=$crashes" >> $GITHUB_OUTPUT
+        echo "rust-targets=$targets" >> $GITHUB_OUTPUT
+        echo "📊 Rust fuzz: $targets targets, $crashes crashes"
+
+    - name: JavaScript Fuzz Testing
+      if: steps.detect.outputs.language == 'javascript'
+      id: js-fuzz
+      shell: bash
+      run: |
+        echo "🔍 Running JavaScript fuzz testing..."
+        cd ${{ inputs.target-path }}
+
+        # Install jsfuzz
+        npm install -g jsfuzz || true
+
+        crashes=0
+        targets=0
+
+        # Find fuzz targets
+        fuzz_files=$(find . -name "*.fuzz.js" -o -name "fuzz*.js" 2>/dev/null | head -5)
+
+        for file in $fuzz_files; do
+          if [ -f "$file" ]; then
+            targets=$((targets + 1))
+            echo "Running fuzz target: $file"
+            
+            timeout ${{ inputs.fuzz-time }}s jsfuzz "$file" \
+              --fuzz-time ${{ inputs.fuzz-time }} \
+              2>&1 | tee -a ${{ inputs.results-dir }}/fuzz/js-fuzz.log || {
+                if [ $? -ne 124 ]; then
+                  crashes=$((crashes + 1))
+                fi
+              }
+          fi
+        done
+
+        echo "js-crashes=$crashes" >> $GITHUB_OUTPUT
+        echo "js-targets=$targets" >> $GITHUB_OUTPUT
+        echo "📊 JavaScript fuzz: $targets targets, $crashes crashes"
+
+    - name: AFL++ Fuzz Testing (C/C++)
+      if: steps.detect.outputs.language == 'c' || steps.detect.outputs.language == 'cpp'
+      id: afl-fuzz
+      shell: bash
+      run: |
+        echo "🔍 Running AFL++ fuzz testing..."
+        cd ${{ inputs.target-path }}
+
+        crashes=0
+        targets=0
+
+        # Install AFL++
+        if ! command -v afl-fuzz &> /dev/null; then
+          apt-get update && apt-get install -y afl++ || true
+        fi
+
+        # Build with AFL instrumentation
+        export CC=afl-clang-fast
+        export CXX=afl-clang-fast++
+        export AFL_USE_ASAN=1
+
+        # Look for Makefile or CMakeLists
+        if [ -f "Makefile" ]; then
+          make clean || true
+          make || true
+        elif [ -f "CMakeLists.txt" ]; then
+          mkdir -p build && cd build
+          cmake -DCMAKE_C_COMPILER=afl-clang-fast -DCMAKE_CXX_COMPILER=afl-clang-fast++ ..
+          make
+          cd ..
+        fi
+
+        # Find fuzz targets (executables in fuzzing directories)
+        for target in $(find . -path "*/fuzz/*" -type f -executable 2>/dev/null | head -3); do
+          targets=$((targets + 1))
+          target_name=$(basename "$target")
+          
+          mkdir -p ${{ inputs.results-dir }}/fuzz/afl_out_$target_name
+          
+          # Create minimal corpus if none exists
+          corpus="${{ inputs.corpus-path }}"
+          if [ -z "$corpus" ] || [ ! -d "$corpus" ]; then
+            corpus="/tmp/afl_corpus"
+            mkdir -p "$corpus"
+            echo "seed" > "$corpus/seed"
+          fi
+
+          echo "Running AFL++ on: $target"
+          timeout ${{ inputs.fuzz-time }}s afl-fuzz \
+            -i "$corpus" \
+            -o ${{ inputs.results-dir }}/fuzz/afl_out_$target_name \
+            -- "$target" @@ 2>&1 | tee -a ${{ inputs.results-dir }}/fuzz/afl-fuzz.log || true
+
+          # Count crashes
+          new_crashes=$(find ${{ inputs.results-dir }}/fuzz/afl_out_$target_name/crashes -type f 2>/dev/null | wc -l)
+          crashes=$((crashes + new_crashes))
+        done
+
+        echo "afl-crashes=$crashes" >> $GITHUB_OUTPUT
+        echo "afl-targets=$targets" >> $GITHUB_OUTPUT
+        echo "📊 AFL++ fuzz: $targets targets, $crashes crashes"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating fuzz testing results..."
+
+        total_crashes=0
+        total_targets=0
+        coverage=0
+
+        # Aggregate crashes from all fuzzers
+        go_crashes="${{ steps.go-fuzz.outputs.go-crashes || 0 }}"
+        python_crashes="${{ steps.python-fuzz.outputs.python-crashes || 0 }}"
+        rust_crashes="${{ steps.rust-fuzz.outputs.rust-crashes || 0 }}"
+        js_crashes="${{ steps.js-fuzz.outputs.js-crashes || 0 }}"
+        afl_crashes="${{ steps.afl-fuzz.outputs.afl-crashes || 0 }}"
+
+        total_crashes=$((go_crashes + python_crashes + rust_crashes + js_crashes + afl_crashes))
+
+        # Count targets
+        go_targets="${{ steps.go-fuzz.outputs.go-targets || 0 }}"
+        python_targets="${{ steps.python-fuzz.outputs.python-targets || 0 }}"
+        rust_targets="${{ steps.rust-fuzz.outputs.rust-targets || 0 }}"
+        js_targets="${{ steps.js-fuzz.outputs.js-targets || 0 }}"
+        afl_targets="${{ steps.afl-fuzz.outputs.afl-targets || 0 }}"
+
+        total_targets=$((go_targets + python_targets + rust_targets + js_targets + afl_targets))
+
+        # Calculate unique crashes
+        unique_crashes=$(find ${{ inputs.results-dir }}/fuzz/crashes -type f 2>/dev/null | wc -l | tr -d ' ')
+
+        # Parse coverage if available
+        if [ -f "${{ inputs.results-dir }}/fuzz/coverage_*.out" ]; then
+          coverage=$(go tool cover -func=${{ inputs.results-dir }}/fuzz/coverage_*.out 2>/dev/null | tail -1 | awk '{print $3}' | tr -d '%' || echo "0")
+        fi
+
+        echo "crashes=$total_crashes" >> $GITHUB_OUTPUT
+        echo "unique-crashes=$unique_crashes" >> $GITHUB_OUTPUT
+        echo "targets=$total_targets" >> $GITHUB_OUTPUT
+        echo "coverage=$coverage" >> $GITHUB_OUTPUT
+
+        # Save summary
+        cat > ${{ inputs.results-dir }}/fuzz/summary.json << EOF
+        {
+          "language": "${{ steps.detect.outputs.language }}",
+          "fuzzer": "${{ steps.detect.outputs.fuzzer }}",
+          "fuzz_time_seconds": ${{ inputs.fuzz-time }},
+          "targets_run": $total_targets,
+          "total_crashes": $total_crashes,
+          "unique_crashes": $unique_crashes,
+          "coverage_percent": $coverage
+        }
+        EOF
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  OSDO Fuzz Testing Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Language: ${{ steps.detect.outputs.language }}"
+        echo "  Fuzzer: ${{ steps.detect.outputs.fuzzer }}"
+        echo "  Duration: ${{ inputs.fuzz-time }}s"
+        echo "  Targets Run: $total_targets"
+        echo "  Total Crashes: $total_crashes"
+        echo "  Unique Crashes: $unique_crashes"
+        echo "  Coverage: ${coverage}%"
+        echo "═══════════════════════════════════════"
+
+    - name: Check Crash Threshold
+      if: inputs.fail-on-crash == 'true'
+      shell: bash
+      run: |
+        crashes=${{ steps.aggregate.outputs.crashes }}
+
+        if [ "$crashes" -gt 0 ]; then
+          echo "❌ Found $crashes crashes during fuzz testing"
+          echo "::error::Crashes found during fuzz testing - review and fix before proceeding"
+          
+          # List crash files
+          echo ""
+          echo "Crash files:"
+          find ${{ inputs.results-dir }}/fuzz -name "crash*" -o -name "id:*" 2>/dev/null | head -10
+          
+          exit 1
+        fi
+
+        echo "✅ No crashes found during fuzz testing"
+
+    - name: Upload Fuzz Results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: osdo-fuzz-results
+        path: ${{ inputs.results-dir }}/fuzz/
+        retention-days: 30
+        if-no-files-found: warn

@@ -83,6 +83,14 @@ osdo-actions/
 | **osdo-mobile-scan** | Mobile Security | v1.0.0+ | MASVS compliance, iOS/Android |
 | **osdo-cloud-scan** | Cloud Security | v1.0.0+ | AWS/Azure/GCP, Prowler |
 | **osdo-license-scan** | License Compliance | v1.0.0+ | License detection, policy enforcement |
+| **osdo-llm-scan** | LLM/AI Security | v1.0.0+ | Prompt injection, model security |
+| **osdo-build-security** | Build seguro con SBOM | v1.0.0+ | Build hardening, generación de SBOM |
+| **osdo-fuzz** | Fuzzing de aplicaciones | v1.0.0+ | Go, Python Atheris, Rust cargo-fuzz, JS jsfuzz, C/C++ AFL++ |
+| **osdo-policy-gate** | Policy as Code | v1.0.0+ | OPA, Kyverno |
+| **osdo-security-gate** | Quality gate de seguridad | v1.0.0+ | Umbral de severidades, bloqueo de pipeline |
+| **osdo-setup-env** | Configuración del entorno | v1.0.0+ | Setup de herramientas y variables de entorno |
+| **osdo-slsa-provenance** | SLSA Provenance | v1.0.0+ | SLSA Level 3, Sigstore/Cosign, Rekor |
+| **osdo-smart-contract-audit** | Auditoría de smart contracts | v1.0.0+ | Slither, Mythril, Solhint para Solidity |
 
 ---
 
@@ -346,7 +354,7 @@ Para vulnerabilidades de seguridad, **NO** abras un issue público. En su lugar,
 
 ## 📊 Impacto
 
-- **14 Actions** en producción
+- **22 Actions** en producción
 - **30+ Security Tools** integradas
 - **10+ Lenguajes** soportados
 - **100+ Proyectos** dependientes

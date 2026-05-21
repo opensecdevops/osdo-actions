@@ -1,0 +1,421 @@
+name: "OSDO Policy Gate"
+description: "Policy-as-Code enforcement using Open Policy Agent (OPA) and Kyverno for security and compliance validation"
+author: "OpenSecDevOps"
+
+inputs:
+  policy-engine:
+    description: "Policy engine to use (opa, kyverno, both)"
+    required: false
+    default: "opa"
+  policy-path:
+    description: "Path to policy files (.rego for OPA, .yaml for Kyverno)"
+    required: false
+    default: ".osdo/policies"
+  target-path:
+    description: "Path to resources to validate"
+    required: false
+    default: "."
+  target-type:
+    description: "Type of resources (kubernetes, terraform, dockerfile, json, yaml, all)"
+    required: false
+    default: "all"
+  builtin-policies:
+    description: "Use built-in OSDO policies (security, compliance, best-practices)"
+    required: false
+    default: "security"
+  fail-on-violation:
+    description: "Fail the action if policy violations are found"
+    required: false
+    default: "true"
+  severity-threshold:
+    description: "Minimum severity to fail (LOW, MEDIUM, HIGH, CRITICAL)"
+    required: false
+    default: "HIGH"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  violations-found:
+    description: "Total policy violations found"
+    value: ${{ steps.aggregate.outputs.total }}
+  critical-count:
+    description: "Critical violations count"
+    value: ${{ steps.aggregate.outputs.critical }}
+  policies-evaluated:
+    description: "Number of policies evaluated"
+    value: ${{ steps.aggregate.outputs.policies }}
+  compliance-score:
+    description: "Compliance score (0-100)"
+    value: ${{ steps.aggregate.outputs.score }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results and policies directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/policy
+        mkdir -p ${{ inputs.policy-path }}
+        echo "Results will be stored in ${{ inputs.results-dir }}/policy"
+
+    - name: Setup Built-in OSDO Policies
+      if: inputs.builtin-policies != 'none'
+      shell: bash
+      run: |
+        echo "📋 Setting up built-in OSDO policies..."
+
+        # Create security policies
+        if [[ "${{ inputs.builtin-policies }}" == *"security"* ]] || [[ "${{ inputs.builtin-policies }}" == "all" ]]; then
+          cat > ${{ inputs.policy-path }}/osdo_security.rego << 'EOF'
+        package osdo.security
+
+        # Deny containers running as root
+        deny[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          not container.securityContext.runAsNonRoot
+          msg := sprintf("Container '%s' must set runAsNonRoot: true", [container.name])
+        }
+
+        # Deny privileged containers
+        deny[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          container.securityContext.privileged == true
+          msg := sprintf("Container '%s' must not run in privileged mode", [container.name])
+        }
+
+        # Deny containers without resource limits
+        deny[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          not container.resources.limits
+          msg := sprintf("Container '%s' must have resource limits defined", [container.name])
+        }
+
+        # Deny use of latest tag
+        deny[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          endswith(container.image, ":latest")
+          msg := sprintf("Container '%s' must not use ':latest' tag", [container.name])
+        }
+
+        # Deny hostNetwork
+        deny[msg] {
+          input.kind == "Deployment"
+          input.spec.template.spec.hostNetwork == true
+          msg := "Pod must not use hostNetwork"
+        }
+
+        # Deny hostPID
+        deny[msg] {
+          input.kind == "Deployment"
+          input.spec.template.spec.hostPID == true
+          msg := "Pod must not use hostPID"
+        }
+
+        # Require read-only root filesystem
+        warn[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          not container.securityContext.readOnlyRootFilesystem
+          msg := sprintf("Container '%s' should use readOnlyRootFilesystem", [container.name])
+        }
+        EOF
+          echo "✅ Created security policies"
+        fi
+
+        # Create compliance policies
+        if [[ "${{ inputs.builtin-policies }}" == *"compliance"* ]] || [[ "${{ inputs.builtin-policies }}" == "all" ]]; then
+          cat > ${{ inputs.policy-path }}/osdo_compliance.rego << 'EOF'
+        package osdo.compliance
+
+        # Require labels
+        deny[msg] {
+          input.kind == "Deployment"
+          not input.metadata.labels["app.kubernetes.io/name"]
+          msg := "Deployment must have 'app.kubernetes.io/name' label"
+        }
+
+        deny[msg] {
+          input.kind == "Deployment"
+          not input.metadata.labels["app.kubernetes.io/version"]
+          msg := "Deployment must have 'app.kubernetes.io/version' label"
+        }
+
+        # Require namespace (not default)
+        deny[msg] {
+          input.kind == "Deployment"
+          input.metadata.namespace == "default"
+          msg := "Deployment must not be in 'default' namespace"
+        }
+
+        # Require liveness and readiness probes
+        warn[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          not container.livenessProbe
+          msg := sprintf("Container '%s' should have a livenessProbe", [container.name])
+        }
+
+        warn[msg] {
+          input.kind == "Deployment"
+          container := input.spec.template.spec.containers[_]
+          not container.readinessProbe
+          msg := sprintf("Container '%s' should have a readinessProbe", [container.name])
+        }
+        EOF
+          echo "✅ Created compliance policies"
+        fi
+
+        # Create Terraform policies
+        cat > ${{ inputs.policy-path }}/osdo_terraform.rego << 'EOF'
+        package osdo.terraform
+
+        # Deny S3 buckets without encryption
+        deny[msg] {
+          resource := input.resource.aws_s3_bucket[name]
+          not resource.server_side_encryption_configuration
+          msg := sprintf("S3 bucket '%s' must have encryption enabled", [name])
+        }
+
+        # Deny security groups with 0.0.0.0/0 ingress
+        deny[msg] {
+          resource := input.resource.aws_security_group[name]
+          rule := resource.ingress[_]
+          rule.cidr_blocks[_] == "0.0.0.0/0"
+          msg := sprintf("Security group '%s' must not allow 0.0.0.0/0 ingress", [name])
+        }
+
+        # Deny RDS without encryption
+        deny[msg] {
+          resource := input.resource.aws_db_instance[name]
+          resource.storage_encrypted != true
+          msg := sprintf("RDS instance '%s' must have encryption enabled", [name])
+        }
+
+        # Deny EC2 without IMDSv2
+        warn[msg] {
+          resource := input.resource.aws_instance[name]
+          not resource.metadata_options
+          msg := sprintf("EC2 instance '%s' should use IMDSv2", [name])
+        }
+        EOF
+        echo "✅ Created Terraform policies"
+
+        # Create Dockerfile policies
+        cat > ${{ inputs.policy-path }}/osdo_dockerfile.rego << 'EOF'
+        package osdo.dockerfile
+
+        # Deny root user
+        deny[msg] {
+          input.user == "root"
+          msg := "Dockerfile must not run as root user"
+        }
+
+        deny[msg] {
+          not input.user
+          msg := "Dockerfile must specify a non-root USER"
+        }
+
+        # Warn on ADD vs COPY
+        warn[msg] {
+          input.add[_]
+          msg := "Prefer COPY over ADD unless extracting archives"
+        }
+
+        # Require HEALTHCHECK
+        warn[msg] {
+          not input.healthcheck
+          msg := "Dockerfile should include HEALTHCHECK instruction"
+        }
+        EOF
+        echo "✅ Created Dockerfile policies"
+
+    - name: Install OPA
+      if: contains(inputs.policy-engine, 'opa') || contains(inputs.policy-engine, 'both')
+      shell: bash
+      run: |
+        if ! command -v opa &> /dev/null; then
+          curl -L -o /usr/local/bin/opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          chmod +x /usr/local/bin/opa
+        fi
+        opa version
+
+    - name: OPA Evaluation - Kubernetes
+      if: (contains(inputs.policy-engine, 'opa') || contains(inputs.policy-engine, 'both')) && (inputs.target-type == 'kubernetes' || inputs.target-type == 'all')
+      id: opa-k8s
+      shell: bash
+      run: |
+        echo "🔍 Evaluating Kubernetes resources with OPA..."
+
+        violations=0
+        warnings=0
+        files_checked=0
+
+        # Find all Kubernetes manifests
+        for file in $(find ${{ inputs.target-path }} -name "*.yaml" -o -name "*.yml" 2>/dev/null); do
+          # Check if it's a Kubernetes resource
+          if grep -q "apiVersion:" "$file" 2>/dev/null; then
+            files_checked=$((files_checked + 1))
+            
+            # Evaluate security policies
+            result=$(opa eval --input "$file" --data ${{ inputs.policy-path }}/osdo_security.rego "data.osdo.security.deny" --format json 2>/dev/null || echo '{"result":[]}')
+            denies=$(echo "$result" | jq '.result[0].expressions[0].value | length // 0')
+            violations=$((violations + denies))
+
+            # Evaluate compliance policies
+            if [ -f "${{ inputs.policy-path }}/osdo_compliance.rego" ]; then
+              result=$(opa eval --input "$file" --data ${{ inputs.policy-path }}/osdo_compliance.rego "data.osdo.compliance.deny" --format json 2>/dev/null || echo '{"result":[]}')
+              compliance_denies=$(echo "$result" | jq '.result[0].expressions[0].value | length // 0')
+              violations=$((violations + compliance_denies))
+
+              # Count warnings
+              warn_result=$(opa eval --input "$file" --data ${{ inputs.policy-path }}/osdo_compliance.rego "data.osdo.compliance.warn" --format json 2>/dev/null || echo '{"result":[]}')
+              warns=$(echo "$warn_result" | jq '.result[0].expressions[0].value | length // 0')
+              warnings=$((warnings + warns))
+            fi
+          fi
+        done
+
+        echo "k8s-violations=$violations" >> $GITHUB_OUTPUT
+        echo "k8s-warnings=$warnings" >> $GITHUB_OUTPUT
+        echo "k8s-files=$files_checked" >> $GITHUB_OUTPUT
+
+        echo "📊 Kubernetes: $files_checked files, $violations violations, $warnings warnings"
+
+    - name: OPA Evaluation - Terraform
+      if: (contains(inputs.policy-engine, 'opa') || contains(inputs.policy-engine, 'both')) && (inputs.target-type == 'terraform' || inputs.target-type == 'all')
+      id: opa-tf
+      shell: bash
+      run: |
+        echo "🔍 Evaluating Terraform resources with OPA..."
+
+        violations=0
+        files_checked=0
+
+        # Convert Terraform to JSON for OPA evaluation
+        for file in $(find ${{ inputs.target-path }} -name "*.tf" 2>/dev/null); do
+          files_checked=$((files_checked + 1))
+          
+          # Use terraform show -json if available, or convert manually
+          # For now, check if terraform plan output exists
+          if [ -f "tfplan.json" ]; then
+            result=$(opa eval --input tfplan.json --data ${{ inputs.policy-path }}/osdo_terraform.rego "data.osdo.terraform.deny" --format json 2>/dev/null || echo '{"result":[]}')
+            denies=$(echo "$result" | jq '.result[0].expressions[0].value | length // 0')
+            violations=$((violations + denies))
+          fi
+        done
+
+        echo "tf-violations=$violations" >> $GITHUB_OUTPUT
+        echo "tf-files=$files_checked" >> $GITHUB_OUTPUT
+
+        echo "📊 Terraform: $files_checked files, $violations violations"
+
+    - name: Kyverno Validation
+      if: contains(inputs.policy-engine, 'kyverno') || contains(inputs.policy-engine, 'both')
+      id: kyverno
+      shell: bash
+      run: |
+        echo "🔍 Validating with Kyverno CLI..."
+
+        # Install Kyverno CLI
+        if ! command -v kyverno &> /dev/null; then
+          curl -LO https://github.com/kyverno/kyverno/releases/latest/download/kyverno-cli_v1.11.0_linux_x86_64.tar.gz
+          tar -xzf kyverno-cli_v1.11.0_linux_x86_64.tar.gz
+          mv kyverno /usr/local/bin/
+        fi
+
+        violations=0
+
+        # Apply Kyverno policies
+        for file in $(find ${{ inputs.target-path }} -name "*.yaml" -o -name "*.yml" 2>/dev/null); do
+          if grep -q "apiVersion:" "$file" 2>/dev/null; then
+            # Skip if it's a Kyverno policy itself
+            if ! grep -q "kind: ClusterPolicy\|kind: Policy" "$file" 2>/dev/null; then
+              result=$(kyverno apply ${{ inputs.policy-path }}/*.yaml --resource "$file" 2>&1 || true)
+              fails=$(echo "$result" | grep -c "fail" || echo "0")
+              violations=$((violations + fails))
+            fi
+          fi
+        done
+
+        echo "kyverno-violations=$violations" >> $GITHUB_OUTPUT
+        echo "📊 Kyverno violations: $violations"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating policy results..."
+
+        total=0
+        critical=0
+        policies=0
+
+        # Aggregate OPA Kubernetes
+        k8s_violations="${{ steps.opa-k8s.outputs.k8s-violations || 0 }}"
+        total=$((total + k8s_violations))
+
+        # Aggregate OPA Terraform
+        tf_violations="${{ steps.opa-tf.outputs.tf-violations || 0 }}"
+        total=$((total + tf_violations))
+
+        # Aggregate Kyverno
+        kyverno_violations="${{ steps.kyverno.outputs.kyverno-violations || 0 }}"
+        total=$((total + kyverno_violations))
+
+        # Count policies
+        policies=$(find ${{ inputs.policy-path }} -name "*.rego" -o -name "*.yaml" 2>/dev/null | wc -l | tr -d ' ')
+
+        # Calculate compliance score
+        if [ "$policies" -gt 0 ]; then
+          score=$((100 - (total * 10)))
+          score=$((score < 0 ? 0 : score))
+        else
+          score=100
+        fi
+
+        echo "total=$total" >> $GITHUB_OUTPUT
+        echo "critical=$critical" >> $GITHUB_OUTPUT
+        echo "policies=$policies" >> $GITHUB_OUTPUT
+        echo "score=$score" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  OSDO Policy Gate Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Policies Evaluated: $policies"
+        echo "  Total Violations: $total"
+        echo "  Compliance Score: $score%"
+        echo "═══════════════════════════════════════"
+
+        # Save detailed results
+        cat > ${{ inputs.results-dir }}/policy/summary.json << EOF
+        {
+          "policies_evaluated": $policies,
+          "total_violations": $total,
+          "kubernetes_violations": ${k8s_violations:-0},
+          "terraform_violations": ${tf_violations:-0},
+          "kyverno_violations": ${kyverno_violations:-0},
+          "compliance_score": $score
+        }
+        EOF
+
+    - name: Check Threshold
+      if: inputs.fail-on-violation == 'true'
+      shell: bash
+      run: |
+        total=${{ steps.aggregate.outputs.total }}
+        threshold="${{ inputs.severity-threshold }}"
+
+        if [ "$total" -gt 0 ]; then
+          echo "❌ Found $total policy violations"
+          echo "::error::Policy violations detected - review and remediate before proceeding"
+          exit 1
+        fi
+
+        echo "✅ All policies passed"

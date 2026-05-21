@@ -1,0 +1,375 @@
+name: "OSDO LLM Security Scan"
+description: "Security analysis for LLM/GenAI applications aligned with OWASP GenAI Security Top 10"
+author: "OpenSecDevOps"
+branding:
+  icon: "cpu"
+  color: "orange"
+
+inputs:
+  source-path:
+    description: "Path to application source code"
+    required: true
+  scanners:
+    description: "Comma-separated scanners: semgrep, rebuff, garak, custom"
+    required: false
+    default: "semgrep"
+  fail-on-severity:
+    description: "Minimum severity to fail: CRITICAL, HIGH, MEDIUM, LOW"
+    required: false
+    default: "HIGH"
+  check-prompt-injection:
+    description: "Check for prompt injection vulnerabilities"
+    required: false
+    default: "true"
+  check-pii-exposure:
+    description: "Check for PII exposure in prompts/responses"
+    required: false
+    default: "true"
+  check-model-serialization:
+    description: "Check for insecure model serialization (pickle)"
+    required: false
+    default: "true"
+  check-output-handling:
+    description: "Check for insecure output handling"
+    required: false
+    default: "true"
+  llm-provider:
+    description: "LLM provider detection: openai, anthropic, google, azure, huggingface"
+    required: false
+    default: "auto"
+  results-dir:
+    description: "Directory for scan results"
+    required: false
+    default: ".osdo/results/llm"
+
+outputs:
+  sarif-file:
+    description: "Path to SARIF output file"
+    value: ${{ steps.consolidate.outputs.sarif-file }}
+  vulnerabilities-found:
+    description: "Total vulnerabilities found"
+    value: ${{ steps.consolidate.outputs.vuln-count }}
+  critical-count:
+    description: "Number of CRITICAL findings"
+    value: ${{ steps.consolidate.outputs.critical-count }}
+  high-count:
+    description: "Number of HIGH findings"
+    value: ${{ steps.consolidate.outputs.high-count }}
+  scan-passed:
+    description: "Whether the scan passed based on thresholds"
+    value: ${{ steps.gate.outputs.passed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Environment
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}
+        echo "OSDO_LLM_RESULTS=${{ inputs.results-dir }}" >> $GITHUB_ENV
+
+    - name: Detect LLM Provider
+      id: provider
+      shell: bash
+      run: |
+        echo "🔍 Detecting LLM provider..."
+        SRC="${{ inputs.source-path }}"
+        PROVIDER="unknown"
+
+        if grep -r "openai\|ChatCompletion\|gpt-" "$SRC" 2>/dev/null; then
+          PROVIDER="openai"
+        elif grep -r "anthropic\|claude" "$SRC" 2>/dev/null; then
+          PROVIDER="anthropic"
+        elif grep -r "google.generativeai\|gemini" "$SRC" 2>/dev/null; then
+          PROVIDER="google"
+        elif grep -r "huggingface\|transformers" "$SRC" 2>/dev/null; then
+          PROVIDER="huggingface"
+        fi
+
+        echo "provider=$PROVIDER" >> $GITHUB_OUTPUT
+        echo "Detected LLM provider: $PROVIDER"
+
+    - name: Run Semgrep LLM Rules
+      if: contains(inputs.scanners, 'semgrep')
+      id: semgrep
+      shell: bash
+      run: |
+        echo "🔍 Running Semgrep LLM security rules..."
+
+        # Create custom LLM rules
+        cat > /tmp/llm-rules.yaml << 'EOF'
+        rules:
+          - id: prompt-injection-risk
+            patterns:
+              - pattern-either:
+                  - pattern: f"...$USER_INPUT..."
+                  - pattern: "..." + $USER_INPUT + "..."
+                  - pattern: template.format(..., $USER_INPUT, ...)
+            message: "User input directly in LLM prompt - potential prompt injection"
+            severity: ERROR
+            languages: [python, javascript, typescript]
+            metadata:
+              owasp: "LLM01"
+              cwe: "CWE-94"
+          
+          - id: insecure-model-load
+            patterns:
+              - pattern: pickle.load(...)
+              - pattern: torch.load($X)
+              - pattern: joblib.load(...)
+            message: "Insecure model deserialization detected"
+            severity: ERROR
+            languages: [python]
+            metadata:
+              owasp: "LLM05"
+              cwe: "CWE-502"
+          
+          - id: api-key-exposure
+            patterns:
+              - pattern: |
+                  openai.api_key = "..."
+              - pattern: |
+                  anthropic.Client(api_key="...")
+            message: "Hardcoded API key detected"
+            severity: ERROR
+            languages: [python, javascript]
+            metadata:
+              owasp: "LLM06"
+              cwe: "CWE-798"
+          
+          - id: unvalidated-llm-output
+            patterns:
+              - pattern: exec($LLM_RESPONSE)
+              - pattern: eval($LLM_RESPONSE)
+              - pattern: subprocess.call($LLM_RESPONSE, shell=True)
+            message: "LLM output used in dangerous function"
+            severity: ERROR
+            languages: [python]
+            metadata:
+              owasp: "LLM02"
+              cwe: "CWE-94"
+          
+          - id: excessive-permissions
+            patterns:
+              - pattern: |
+                  functions=[{"type": "function", "function": {"name": "run_shell", ...}}]
+            message: "LLM function with excessive permissions"
+            severity: WARNING
+            languages: [python, javascript]
+            metadata:
+              owasp: "LLM08"
+        EOF
+
+        semgrep --config /tmp/llm-rules.yaml \
+          --config "p/python-security" \
+          --sarif \
+          --output ${{ inputs.results-dir }}/semgrep-llm.sarif \
+          ${{ inputs.source-path }} || true
+
+        if [ -f "${{ inputs.results-dir }}/semgrep-llm.sarif" ]; then
+          FINDINGS=$(jq '[.runs[].results[]] | length' ${{ inputs.results-dir }}/semgrep-llm.sarif 2>/dev/null || echo 0)
+          echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+          echo "sarif=${{ inputs.results-dir }}/semgrep-llm.sarif" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Check Prompt Injection Patterns
+      if: inputs.check-prompt-injection == 'true'
+      id: prompt-injection
+      shell: bash
+      run: |
+        echo "🔍 Checking for prompt injection vulnerabilities..."
+
+        SRC="${{ inputs.source-path }}"
+        ISSUES=0
+
+        # Check for f-strings with user input
+        if grep -rn 'f".*{user\|f".*{input\|f".*{request' "$SRC" 2>/dev/null; then
+          echo "::warning::User input directly in f-string prompt (LLM01)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        # Check for missing input sanitization
+        if grep -rn 'messages.*content.*user_input' "$SRC" 2>/dev/null | grep -v 'sanitize\|escape\|clean'; then
+          echo "::warning::Unsanitized user input in LLM message (LLM01)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        # Check for system prompt overrides
+        if grep -rn 'system.*=.*user\|role.*=.*request' "$SRC" 2>/dev/null; then
+          echo "::warning::User-controlled system prompt detected (LLM01)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+    - name: Check PII Exposure
+      if: inputs.check-pii-exposure == 'true'
+      id: pii
+      shell: bash
+      run: |
+        echo "🔍 Checking for PII exposure in prompts..."
+
+        SRC="${{ inputs.source-path }}"
+        ISSUES=0
+
+        # Check for PII fields being sent to LLM
+        if grep -rn 'email\|phone\|ssn\|credit_card\|password' "$SRC" 2>/dev/null | grep -i 'content\|prompt\|message'; then
+          echo "::warning::Potential PII in LLM prompt (LLM06)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        # Check for logging LLM responses
+        if grep -rn 'print.*response\|log.*completion' "$SRC" 2>/dev/null; then
+          echo "::notice::LLM responses being logged - ensure no PII (LLM06)"
+        fi
+
+        echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+    - name: Check Model Serialization
+      if: inputs.check-model-serialization == 'true'
+      id: serialization
+      shell: bash
+      run: |
+        echo "🔍 Checking for insecure model serialization..."
+
+        SRC="${{ inputs.source-path }}"
+        ISSUES=0
+
+        # Check for pickle usage with models
+        if grep -rn 'pickle.load\|pickle.loads' "$SRC" 2>/dev/null; then
+          echo "::error::Insecure pickle deserialization (LLM05)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        # Check for torch.load without weights_only
+        if grep -rn 'torch.load(' "$SRC" 2>/dev/null | grep -v 'weights_only=True'; then
+          echo "::warning::torch.load without weights_only=True (LLM05)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+    - name: Check Output Handling
+      if: inputs.check-output-handling == 'true'
+      id: output
+      shell: bash
+      run: |
+        echo "🔍 Checking for insecure output handling..."
+
+        SRC="${{ inputs.source-path }}"
+        ISSUES=0
+
+        # Check for dangerous output usage
+        if grep -rn 'eval.*response\|exec.*completion\|subprocess.*output' "$SRC" 2>/dev/null; then
+          echo "::error::LLM output used in dangerous function (LLM02)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        # Check for direct HTML rendering
+        if grep -rn 'innerHTML.*response\|dangerouslySetInnerHTML.*completion' "$SRC" 2>/dev/null; then
+          echo "::error::LLM output rendered as HTML - XSS risk (LLM02)"
+          ISSUES=$((ISSUES + 1))
+        fi
+
+        echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+    - name: OWASP GenAI Top 10 Summary
+      id: owasp-llm
+      shell: bash
+      run: |
+        echo "📊 OWASP GenAI Top 10 Coverage Check..."
+
+        COVERED=0
+        TOTAL=10
+
+        # LLM01: Prompt Injection (checked)
+        if [ "${{ inputs.check-prompt-injection }}" == "true" ]; then COVERED=$((COVERED + 1)); fi
+
+        # LLM02: Insecure Output Handling (checked)
+        if [ "${{ inputs.check-output-handling }}" == "true" ]; then COVERED=$((COVERED + 1)); fi
+
+        # LLM05: Supply Chain (checked via serialization)
+        if [ "${{ inputs.check-model-serialization }}" == "true" ]; then COVERED=$((COVERED + 1)); fi
+
+        # LLM06: Sensitive Information Disclosure (checked via PII)
+        if [ "${{ inputs.check-pii-exposure }}" == "true" ]; then COVERED=$((COVERED + 1)); fi
+
+        echo "covered=$COVERED" >> $GITHUB_OUTPUT
+        echo "total=$TOTAL" >> $GITHUB_OUTPUT
+        echo "OWASP GenAI coverage: $COVERED/$TOTAL checks enabled"
+
+    - name: Consolidate Results
+      id: consolidate
+      shell: bash
+      run: |
+        echo "📊 Consolidating LLM security results..."
+
+        VULN_COUNT=0
+        CRITICAL_COUNT=0
+        HIGH_COUNT=0
+
+        # Semgrep findings
+        SEMGREP_FINDINGS=${{ steps.semgrep.outputs.findings || 0 }}
+        VULN_COUNT=$((VULN_COUNT + SEMGREP_FINDINGS))
+
+        # Prompt injection issues
+        PI_ISSUES=${{ steps.prompt-injection.outputs.issues || 0 }}
+        VULN_COUNT=$((VULN_COUNT + PI_ISSUES))
+        if [ "$PI_ISSUES" -gt 0 ]; then HIGH_COUNT=$((HIGH_COUNT + PI_ISSUES)); fi
+
+        # Serialization issues
+        SER_ISSUES=${{ steps.serialization.outputs.issues || 0 }}
+        VULN_COUNT=$((VULN_COUNT + SER_ISSUES))
+        if [ "$SER_ISSUES" -gt 0 ]; then CRITICAL_COUNT=$((CRITICAL_COUNT + SER_ISSUES)); fi
+
+        # Output handling issues
+        OUT_ISSUES=${{ steps.output.outputs.issues || 0 }}
+        VULN_COUNT=$((VULN_COUNT + OUT_ISSUES))
+        if [ "$OUT_ISSUES" -gt 0 ]; then CRITICAL_COUNT=$((CRITICAL_COUNT + OUT_ISSUES)); fi
+
+        echo "vuln-count=$VULN_COUNT" >> $GITHUB_OUTPUT
+        echo "critical-count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+        echo "high-count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+        echo "sarif-file=${{ steps.semgrep.outputs.sarif }}" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  LLM Security Scan Summary"
+        echo "═══════════════════════════════════════"
+        echo "  LLM Provider: ${{ steps.provider.outputs.provider }}"
+        echo "  Total Vulnerabilities: $VULN_COUNT"
+        echo "  Critical: $CRITICAL_COUNT"
+        echo "  High: $HIGH_COUNT"
+        echo "  OWASP GenAI Coverage: ${{ steps.owasp-llm.outputs.covered }}/${{ steps.owasp-llm.outputs.total }}"
+        echo "═══════════════════════════════════════"
+
+    - name: Quality Gate
+      id: gate
+      shell: bash
+      run: |
+        THRESHOLD="${{ inputs.fail-on-severity }}"
+        CRITICAL=${{ steps.consolidate.outputs.critical-count }}
+        HIGH=${{ steps.consolidate.outputs.high-count }}
+        PASSED="true"
+
+        case "$THRESHOLD" in
+          CRITICAL)
+            if [ "$CRITICAL" -gt 0 ]; then PASSED="false"; fi
+            ;;
+          HIGH)
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then PASSED="false"; fi
+            ;;
+          *)
+            if [ "${{ steps.consolidate.outputs.vuln-count }}" -gt 0 ]; then PASSED="false"; fi
+            ;;
+        esac
+
+        echo "passed=$PASSED" >> $GITHUB_OUTPUT
+
+        if [ "$PASSED" == "false" ]; then
+          echo "::error::LLM security scan failed!"
+          echo "::error::Critical: $CRITICAL, High: $HIGH"
+          exit 1
+        fi
+
+        echo "✅ LLM security scan passed"

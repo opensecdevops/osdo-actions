@@ -1,0 +1,299 @@
+name: "OSDO Smart Contract Security Audit"
+description: "Comprehensive security analysis for Ethereum/EVM smart contracts aligned with OWASP Smart Contract Top 10"
+author: "OpenSecDevOps"
+branding:
+  icon: "code"
+  color: "purple"
+
+inputs:
+  contracts-path:
+    description: "Path to smart contract source files"
+    required: true
+  language:
+    description: "Contract language: solidity, vyper, rust (for Solana)"
+    required: false
+    default: "solidity"
+  scanners:
+    description: "Comma-separated scanners: slither, mythril, solhint, echidna"
+    required: false
+    default: "slither,solhint"
+  solidity-version:
+    description: "Solidity compiler version"
+    required: false
+    default: "0.8.20"
+  fail-on-severity:
+    description: "Minimum severity to fail: CRITICAL, HIGH, MEDIUM, LOW"
+    required: false
+    default: "HIGH"
+  check-reentrancy:
+    description: "Check for reentrancy vulnerabilities"
+    required: false
+    default: "true"
+  check-gas-optimization:
+    description: "Include gas optimization checks"
+    required: false
+    default: "true"
+  check-access-control:
+    description: "Analyze access control patterns"
+    required: false
+    default: "true"
+  networks:
+    description: "Target networks for deployment verification: mainnet, polygon, bsc"
+    required: false
+    default: "mainnet"
+  results-dir:
+    description: "Directory for scan results"
+    required: false
+    default: ".osdo/results/web3"
+
+outputs:
+  sarif-file:
+    description: "Path to SARIF output file"
+    value: ${{ steps.consolidate.outputs.sarif-file }}
+  vulnerabilities-found:
+    description: "Total vulnerabilities found"
+    value: ${{ steps.consolidate.outputs.vuln-count }}
+  critical-count:
+    description: "Number of CRITICAL findings"
+    value: ${{ steps.consolidate.outputs.critical-count }}
+  high-count:
+    description: "Number of HIGH findings"
+    value: ${{ steps.consolidate.outputs.high-count }}
+  gas-issues:
+    description: "Number of gas optimization issues"
+    value: ${{ steps.consolidate.outputs.gas-issues }}
+  scan-passed:
+    description: "Whether the scan passed based on thresholds"
+    value: ${{ steps.gate.outputs.passed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Environment
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}
+        echo "OSDO_WEB3_RESULTS=${{ inputs.results-dir }}" >> $GITHUB_ENV
+
+        # Install solc if not present
+        if ! command -v solc &> /dev/null; then
+          pip install solc-select || true
+          solc-select install ${{ inputs.solidity-version }} || true
+          solc-select use ${{ inputs.solidity-version }} || true
+        fi
+
+    - name: Run Slither Analysis
+      if: contains(inputs.scanners, 'slither')
+      id: slither
+      shell: bash
+      run: |
+        echo "🔍 Running Slither static analysis..."
+
+        # Install Slither
+        pip install slither-analyzer || true
+
+        # Run Slither with SARIF output
+        slither ${{ inputs.contracts-path }} \
+          --sarif ${{ inputs.results-dir }}/slither.sarif \
+          --json ${{ inputs.results-dir }}/slither.json \
+          --solc-remaps "@openzeppelin=node_modules/@openzeppelin" \
+          || true
+
+        # Count findings by severity
+        if [ -f "${{ inputs.results-dir }}/slither.json" ]; then
+          CRITICAL=$(jq '[.results.detectors[] | select(.impact == "High" and .confidence == "High")] | length' ${{ inputs.results-dir }}/slither.json 2>/dev/null || echo 0)
+          HIGH=$(jq '[.results.detectors[] | select(.impact == "High")] | length' ${{ inputs.results-dir }}/slither.json 2>/dev/null || echo 0)
+          
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "sarif=${{ inputs.results-dir }}/slither.sarif" >> $GITHUB_OUTPUT
+        fi
+
+        echo "✅ Slither analysis complete"
+
+    - name: Run Mythril Symbolic Execution
+      if: contains(inputs.scanners, 'mythril')
+      id: mythril
+      shell: bash
+      run: |
+        echo "🔍 Running Mythril symbolic execution..."
+
+        # Run Mythril via Docker for better compatibility
+        docker run --rm -v $(pwd):/src \
+          mythril/myth analyze \
+          /src/${{ inputs.contracts-path }}/*.sol \
+          --output json \
+          --execution-timeout 300 \
+          > ${{ inputs.results-dir }}/mythril.json 2>&1 || true
+
+        if [ -f "${{ inputs.results-dir }}/mythril.json" ]; then
+          MYTHRIL_ISSUES=$(jq '.issues | length' ${{ inputs.results-dir }}/mythril.json 2>/dev/null || echo 0)
+          echo "issues=$MYTHRIL_ISSUES" >> $GITHUB_OUTPUT
+        fi
+
+        echo "✅ Mythril analysis complete"
+
+    - name: Run Solhint Linter
+      if: contains(inputs.scanners, 'solhint')
+      id: solhint
+      shell: bash
+      run: |
+        echo "🔍 Running Solhint security linting..."
+
+        npm install -g solhint || true
+
+        # Create config if not exist
+        if [ ! -f ".solhint.json" ]; then
+          echo '{"extends": "solhint:recommended", "rules": {"security/no-inline-assembly": "warn", "security/not-rely-on-time": "warn"}}' > .solhint.json
+        fi
+
+        solhint "${{ inputs.contracts-path }}/**/*.sol" \
+          --formatter json \
+          > ${{ inputs.results-dir }}/solhint.json 2>&1 || true
+
+        echo "✅ Solhint analysis complete"
+
+    - name: OWASP Smart Contract Top 10 Check
+      id: owasp-sc
+      shell: bash
+      run: |
+        echo "📊 Checking OWASP Smart Contract Top 10 coverage..."
+
+        SC_PATH="${{ inputs.contracts-path }}"
+        FINDINGS=()
+
+        # SC01: Reentrancy
+        if [ "${{ inputs.check-reentrancy }}" == "true" ]; then
+          if grep -r "call{value" "$SC_PATH" 2>/dev/null | grep -v "ReentrancyGuard"; then
+            echo "::warning::Potential reentrancy pattern detected (SC01)"
+            FINDINGS+=("SC01")
+          fi
+        fi
+
+        # SC02: Access Control
+        if [ "${{ inputs.check-access-control }}" == "true" ]; then
+          if ! grep -r "onlyOwner\|Ownable\|AccessControl" "$SC_PATH" 2>/dev/null; then
+            echo "::warning::No access control patterns detected (SC02)"
+            FINDINGS+=("SC02")
+          fi
+        fi
+
+        # SC03: Arithmetic Issues (Solidity 0.8+ has built-in checks)
+        SOLC_VER="${{ inputs.solidity-version }}"
+        if [[ ! "$SOLC_VER" =~ ^0\.[89] ]]; then
+          echo "::warning::Consider upgrading to Solidity 0.8+ for built-in overflow protection (SC03)"
+          FINDINGS+=("SC03")
+        fi
+
+        # SC05: Denial of Service
+        if grep -r "for.*length\|while.*true" "$SC_PATH" 2>/dev/null; then
+          echo "::warning::Potential DoS via unbounded loops (SC05)"
+          FINDINGS+=("SC05")
+        fi
+
+        # SC06: Bad Randomness
+        if grep -r "block.timestamp\|blockhash" "$SC_PATH" 2>/dev/null; then
+          echo "::warning::Potential bad randomness source (SC06)"
+          FINDINGS+=("SC06")
+        fi
+
+        echo "owasp-findings=${#FINDINGS[@]}" >> $GITHUB_OUTPUT
+        echo "SC findings: ${FINDINGS[*]}"
+
+    - name: Gas Optimization Analysis
+      if: inputs.check-gas-optimization == 'true'
+      id: gas
+      shell: bash
+      run: |
+        echo "⛽ Analyzing gas optimization opportunities..."
+
+        GAS_ISSUES=0
+        SC_PATH="${{ inputs.contracts-path }}"
+
+        # Check for storage in loops
+        if grep -r "storage.*for\|for.*storage" "$SC_PATH" 2>/dev/null; then
+          echo "::notice::Storage access in loop detected - consider caching"
+          GAS_ISSUES=$((GAS_ISSUES + 1))
+        fi
+
+        # Check for string vs bytes32
+        if grep -r "string public\|string private" "$SC_PATH" 2>/dev/null; then
+          echo "::notice::Consider bytes32 instead of string for fixed-length data"
+          GAS_ISSUES=$((GAS_ISSUES + 1))
+        fi
+
+        echo "gas-issues=$GAS_ISSUES" >> $GITHUB_OUTPUT
+
+    - name: Consolidate Results
+      id: consolidate
+      shell: bash
+      run: |
+        echo "📊 Consolidating Web3 security results..."
+
+        VULN_COUNT=0
+        CRITICAL_COUNT=0
+        HIGH_COUNT=0
+        GAS_ISSUES=0
+
+        # Aggregate from Slither
+        if [ -f "${{ inputs.results-dir }}/slither.json" ]; then
+          SLITHER_TOTAL=$(jq '.results.detectors | length' ${{ inputs.results-dir }}/slither.json 2>/dev/null || echo 0)
+          VULN_COUNT=$((VULN_COUNT + SLITHER_TOTAL))
+          CRITICAL_COUNT=$((CRITICAL_COUNT + ${{ steps.slither.outputs.critical || 0 }}))
+          HIGH_COUNT=$((HIGH_COUNT + ${{ steps.slither.outputs.high || 0 }}))
+        fi
+
+        # Aggregate from Mythril
+        MYTHRIL_ISSUES=${{ steps.mythril.outputs.issues || 0 }}
+        VULN_COUNT=$((VULN_COUNT + MYTHRIL_ISSUES))
+
+        # Gas issues
+        GAS_ISSUES=${{ steps.gas.outputs.gas-issues || 0 }}
+
+        echo "vuln-count=$VULN_COUNT" >> $GITHUB_OUTPUT
+        echo "critical-count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+        echo "high-count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+        echo "gas-issues=$GAS_ISSUES" >> $GITHUB_OUTPUT
+        echo "sarif-file=${{ inputs.results-dir }}/slither.sarif" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  Smart Contract Security Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Total Vulnerabilities: $VULN_COUNT"
+        echo "  Critical: $CRITICAL_COUNT"
+        echo "  High: $HIGH_COUNT"
+        echo "  Gas Optimizations: $GAS_ISSUES"
+        echo "  OWASP SC Findings: ${{ steps.owasp-sc.outputs.owasp-findings || 0 }}"
+        echo "═══════════════════════════════════════"
+
+    - name: Quality Gate
+      id: gate
+      shell: bash
+      run: |
+        THRESHOLD="${{ inputs.fail-on-severity }}"
+        CRITICAL=${{ steps.consolidate.outputs.critical-count }}
+        HIGH=${{ steps.consolidate.outputs.high-count }}
+        PASSED="true"
+
+        case "$THRESHOLD" in
+          CRITICAL)
+            if [ "$CRITICAL" -gt 0 ]; then PASSED="false"; fi
+            ;;
+          HIGH)
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then PASSED="false"; fi
+            ;;
+          *)
+            if [ "${{ steps.consolidate.outputs.vuln-count }}" -gt 0 ]; then PASSED="false"; fi
+            ;;
+        esac
+
+        echo "passed=$PASSED" >> $GITHUB_OUTPUT
+
+        if [ "$PASSED" == "false" ]; then
+          echo "::error::Smart contract security scan failed!"
+          echo "::error::Critical: $CRITICAL, High: $HIGH"
+          exit 1
+        fi
+
+        echo "✅ Smart contract security scan passed"

@@ -1,0 +1,328 @@
+# OSDO Framework Testing
+# Comprehensive CI workflow for testing all components
+
+name: Test OSDO Framework
+
+on:
+    push:
+        branches: [main, develop]
+    pull_request:
+        branches: [main]
+    schedule:
+        - cron: "0 2 * * *" # Daily at 2 AM
+
+permissions:
+    contents: read
+    security-events: write
+
+jobs:
+    # ============================================
+    # Test GitHub Actions
+    # ============================================
+
+    test-osdo-sast:
+        name: Test osdo-sast
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Test Clean Code
+              run: |
+                  mkdir -p test-project
+                  cat > test-project/main.py << 'EOF'
+                  def safe_function():
+                      return "Hello, World!"
+                  EOF
+
+            - name: Run SAST
+              id: sast
+              uses: ./actions/osdo-sast
+              with:
+                  path: test-project
+              continue-on-error: true
+
+            - name: Verify Clean Code Passes
+              if: steps.sast.outputs.vulnerabilities-found != '0'
+              run: |
+                  echo "Clean code should have 0 findings"
+                  exit 1
+
+    test-osdo-sast-vulnerable:
+        name: Test osdo-sast (vulnerable)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Create Vulnerable Code
+              run: |
+                  mkdir -p vuln-project
+                  cat > vuln-project/app.py << 'EOF'
+                  import os
+                  def run(cmd):
+                      os.system(cmd)  # Command injection
+                  EOF
+
+            - name: Run SAST
+              id: sast
+              uses: ./actions/osdo-sast
+              with:
+                  path: vuln-project
+              continue-on-error: true
+
+            - name: Verify Vulnerability Detected
+              if: steps.sast.outputs.vulnerabilities-found == '0'
+              run: |
+                  echo "Vulnerable code should have findings"
+                  exit 1
+
+    test-osdo-sca:
+        name: Test osdo-sca
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Create Clean Project
+              run: |
+                  mkdir -p test-project
+                  cat > test-project/package.json << 'EOF'
+                  {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": {}
+                  }
+                  EOF
+
+            - name: Run SCA
+              uses: ./actions/osdo-sca
+              with:
+                  path: test-project
+
+    test-osdo-secrets-scan:
+        name: Test osdo-secrets-scan
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Create Clean Files
+              run: |
+                  mkdir -p test-project
+                  echo "# No secrets here" > test-project/README.md
+
+            - name: Run Secrets Scan
+              uses: ./actions/osdo-secrets-scan
+              with:
+                  path: test-project
+
+    test-osdo-sbom:
+        name: Test osdo-sbom
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Generate SBOM
+              uses: ./actions/osdo-sbom
+              with:
+                  path: .
+                  format: both
+
+            - name: Verify SBOM Files
+              run: |
+                  ls -la .osdo/results/sbom/
+                  if [ ! -f .osdo/results/sbom/sbom-spdx.json ]; then
+                    echo "SPDX SBOM not generated"
+                    exit 1
+                  fi
+
+    test-osdo-container-scan:
+        name: Test osdo-container-scan
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Build Test Image
+              run: |
+                  cat > Dockerfile << 'EOF'
+                  FROM alpine:3.19
+                  RUN apk add --no-cache curl
+                  CMD ["echo", "test"]
+                  EOF
+                  docker build -t test-image:latest .
+
+            - name: Scan Container
+              uses: ./actions/osdo-container-scan
+              with:
+                  image: test-image:latest
+
+    # ============================================
+    # Test CLI
+    # ============================================
+
+    test-cli-unit:
+        name: CLI Unit Tests
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - name: Instalar @osdo/cli
+              run: npm install -g @osdo/cli
+
+            - name: Verificar instalación
+              run: osdo --version
+
+            - name: Smoke tests
+              run: |
+                  osdo --help
+                  osdo scan --help
+                  osdo certify --help
+
+    test-cli-integration:
+        name: CLI Integration Tests
+        runs-on: ubuntu-latest
+        needs: test-cli-unit
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - name: Instalar @osdo/cli
+              run: npm install -g @osdo/cli
+
+            - name: Test osdo init
+              run: |
+                  osdo init --template web-api --name test-project --path /tmp
+                  ls -la /tmp/test-project/
+                  [ -f /tmp/test-project/.osdo/config.yml ] || [ -f /tmp/test-project/.osdo/config.yaml ]
+
+            - name: Test osdo scan
+              run: |
+                  cd /tmp/test-project
+                  osdo scan --type sast || true
+
+            - name: Test osdo certify
+              run: |
+                  cd /tmp/test-project
+                  osdo certify --standard owasp || true
+
+    # ============================================
+    # E2E Tests
+    # ============================================
+
+    e2e-full-pipeline:
+        name: E2E Full Pipeline
+        runs-on: ubuntu-latest
+        needs: [test-osdo-sast, test-osdo-sca, test-osdo-sbom]
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Stage 1 - SAST
+              uses: ./actions/osdo-sast
+              with:
+                  path: .
+
+            - name: Stage 2 - SCA
+              uses: ./actions/osdo-sca
+              with:
+                  path: .
+
+            - name: Stage 3 - Secrets
+              uses: ./actions/osdo-secrets-scan
+              with:
+                  path: .
+
+            - name: Stage 4 - SBOM
+              uses: ./actions/osdo-sbom
+              with:
+                  format: both
+
+            - name: Verify All Results
+              run: |
+                  echo "Verifying pipeline completed successfully"
+                  ls -la .osdo/results/
+
+    # ============================================
+    # Matrix Test (Multiple Languages)
+    # ============================================
+
+    test-multi-language:
+        name: Test ${{ matrix.language }}
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                language: [python, javascript, go, java]
+                include:
+                    - language: python
+                      file: "main.py"
+                      content: |
+                          def hello():
+                              return "Hello"
+                    - language: javascript
+                      file: "index.js"
+                      content: |
+                          function hello() {
+                              return "Hello";
+                          }
+                    - language: go
+                      file: "main.go"
+                      content: |
+                          package main
+                          func main() {}
+                    - language: java
+                      file: "Main.java"
+                      content: |
+                          public class Main {
+                              public static void main(String[] args) {}
+                          }
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Create ${{ matrix.language }} Project
+              run: |
+                  mkdir -p test-${{ matrix.language }}
+                  echo '${{ matrix.content }}' > test-${{ matrix.language }}/${{ matrix.file }}
+
+            - name: Test SAST on ${{ matrix.language }}
+              uses: ./actions/osdo-sast
+              with:
+                  path: test-${{ matrix.language }}
+
+    # ============================================
+    # Summary
+    # ============================================
+
+    test-summary:
+        name: Test Summary
+        runs-on: ubuntu-latest
+        needs:
+            - test-osdo-sast
+            - test-osdo-sast-vulnerable
+            - test-osdo-sca
+            - test-osdo-secrets-scan
+            - test-osdo-sbom
+            - test-osdo-container-scan
+            - test-cli-unit
+            - test-cli-integration
+            - e2e-full-pipeline
+            - test-multi-language
+        if: always()
+        steps:
+            - name: Summary
+              run: |
+                  echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+                  echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+                  echo "| osdo-sast | ${{ needs.test-osdo-sast.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| osdo-sca | ${{ needs.test-osdo-sca.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| osdo-secrets-scan | ${{ needs.test-osdo-secrets-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| osdo-sbom | ${{ needs.test-osdo-sbom.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| osdo-container-scan | ${{ needs.test-osdo-container-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| CLI Unit Tests | ${{ needs.test-cli-unit.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| CLI Integration | ${{ needs.test-cli-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| E2E Pipeline | ${{ needs.e2e-full-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY

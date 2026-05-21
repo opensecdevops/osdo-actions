@@ -1,28 +1,262 @@
-name: 'OSDO Secrets Scan'
-description: 'Scan for secrets in code repositories'
-author: 'OpenSecDevOps'
+name: "OSDO Secrets Scan"
+description: "Scan for secrets and credentials in code using Gitleaks, TruffleHog, and detect-secrets"
+author: "OpenSecDevOps"
 
 inputs:
   path:
-    description: 'Path to scan for secrets'
+    description: "Path to scan for secrets"
     required: false
-    default: '.'
+    default: "."
+  scanners:
+    description: "Scanners to use (gitleaks, trufflehog, detect-secrets, all)"
+    required: false
+    default: "gitleaks"
+  scan-mode:
+    description: "Scan mode (all-history, staged, pre-commit, directory)"
+    required: false
+    default: "directory"
+  baseline-file:
+    description: "Path to baseline file for known secrets (detect-secrets)"
+    required: false
+    default: ""
   fail-on-finding:
-    description: 'Fail the action if secrets are found'
+    description: "Fail the action if secrets are found"
     required: false
-    default: 'true'
+    default: "true"
+  gitleaks-config:
+    description: "Path to custom Gitleaks config file"
+    required: false
+    default: ""
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
 
 outputs:
   findings:
-    description: 'Number of secrets found'
-    value: ${{ steps.scan.outputs.findings }}
+    description: "Total secrets found"
+    value: ${{ steps.aggregate.outputs.total }}
+  secret-types:
+    description: "Types of secrets found"
+    value: ${{ steps.aggregate.outputs.types }}
+  sarif-file:
+    description: "Path to SARIF output file"
+    value: ${{ steps.aggregate.outputs.sarif-path }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
-    - name: Secrets Scan
-      id: scan
+    - name: Create results directory
       shell: bash
       run: |
-        echo "Running secrets scan on ${{ inputs.path }}"
-        echo "findings=0" >> $GITHUB_OUTPUT
+        mkdir -p ${{ inputs.results-dir }}/secrets
+        echo "Results will be stored in ${{ inputs.results-dir }}/secrets"
+
+    - name: Gitleaks Scan
+      if: contains(inputs.scanners, 'gitleaks') || contains(inputs.scanners, 'all')
+      id: gitleaks
+      shell: bash
+      run: |
+        echo "🔍 Running Gitleaks secrets scan..."
+
+        # Install Gitleaks
+        if ! command -v gitleaks &> /dev/null; then
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_8.18.2_linux_x64.tar.gz | tar xz -C /usr/local/bin gitleaks
+          chmod +x /usr/local/bin/gitleaks
+        fi
+
+        # Build command based on scan mode
+        gitleaks_cmd="gitleaks detect"
+
+        case "${{ inputs.scan-mode }}" in
+          "all-history")
+            gitleaks_cmd="$gitleaks_cmd --source ${{ inputs.path }}"
+            ;;
+          "staged")
+            gitleaks_cmd="$gitleaks_cmd --staged --source ${{ inputs.path }}"
+            ;;
+          "pre-commit")
+            gitleaks_cmd="$gitleaks_cmd --pre-commit --source ${{ inputs.path }}"
+            ;;
+          *)
+            gitleaks_cmd="$gitleaks_cmd --no-git --source ${{ inputs.path }}"
+            ;;
+        esac
+
+        # Add custom config if provided
+        if [ -n "${{ inputs.gitleaks-config }}" ] && [ -f "${{ inputs.gitleaks-config }}" ]; then
+          gitleaks_cmd="$gitleaks_cmd --config ${{ inputs.gitleaks-config }}"
+        fi
+
+        # Run Gitleaks with JSON and SARIF output
+        $gitleaks_cmd \
+          --report-format json \
+          --report-path ${{ inputs.results-dir }}/secrets/gitleaks.json \
+          --exit-code 0 || true
+
+        # Also generate SARIF
+        $gitleaks_cmd \
+          --report-format sarif \
+          --report-path ${{ inputs.results-dir }}/secrets/gitleaks.sarif \
+          --exit-code 0 || true
+
+        # Extract counts
+        if [ -f "${{ inputs.results-dir }}/secrets/gitleaks.json" ]; then
+          total=$(jq '. | length' ${{ inputs.results-dir }}/secrets/gitleaks.json 2>/dev/null || echo "0")
+          
+          # Get unique secret types
+          types=$(jq -r '[.[].RuleID] | unique | join(", ")' ${{ inputs.results-dir }}/secrets/gitleaks.json 2>/dev/null || echo "none")
+        else
+          total=0
+          types="none"
+        fi
+
+        echo "gitleaks-total=$total" >> $GITHUB_OUTPUT
+        echo "gitleaks-types=$types" >> $GITHUB_OUTPUT
+
+        echo "📊 Gitleaks found: $total secrets"
+        if [ "$total" -gt 0 ]; then
+          echo "Secret types: $types"
+        fi
+
+    - name: TruffleHog Scan
+      if: contains(inputs.scanners, 'trufflehog') || contains(inputs.scanners, 'all')
+      id: trufflehog
+      shell: bash
+      run: |
+        echo "🔍 Running TruffleHog secrets scan..."
+
+        # Run TruffleHog via Docker
+        if [ "${{ inputs.scan-mode }}" == "all-history" ] && [ -d "${{ inputs.path }}/.git" ]; then
+          docker run --rm \
+            -v $(pwd):/repo \
+            trufflesecurity/trufflehog:latest \
+            git file:///repo \
+            --json \
+            --no-update > ${{ inputs.results-dir }}/secrets/trufflehog.json 2>/dev/null || true
+        else
+          docker run --rm \
+            -v $(pwd):/repo \
+            trufflesecurity/trufflehog:latest \
+            filesystem /repo/${{ inputs.path }} \
+            --json \
+            --no-update > ${{ inputs.results-dir }}/secrets/trufflehog.json 2>/dev/null || true
+        fi
+
+        # Count findings (TruffleHog outputs one JSON object per line)
+        if [ -f "${{ inputs.results-dir }}/secrets/trufflehog.json" ]; then
+          total=$(wc -l < ${{ inputs.results-dir }}/secrets/trufflehog.json | tr -d ' ')
+          verified=$(grep -c '"Verified":true' ${{ inputs.results-dir }}/secrets/trufflehog.json || echo "0")
+        else
+          total=0
+          verified=0
+        fi
+
+        echo "trufflehog-total=$total" >> $GITHUB_OUTPUT
+        echo "trufflehog-verified=$verified" >> $GITHUB_OUTPUT
+
+        echo "📊 TruffleHog found: $total secrets ($verified verified)"
+
+    - name: detect-secrets Scan
+      if: contains(inputs.scanners, 'detect-secrets') || contains(inputs.scanners, 'all')
+      id: detect-secrets
+      shell: bash
+      run: |
+        echo "🔍 Running detect-secrets scan..."
+
+        pip install detect-secrets --quiet
+
+        # Run detect-secrets
+        if [ -n "${{ inputs.baseline-file }}" ] && [ -f "${{ inputs.baseline-file }}" ]; then
+          # Audit against baseline
+          detect-secrets scan ${{ inputs.path }} --baseline ${{ inputs.baseline-file }} > ${{ inputs.results-dir }}/secrets/detect-secrets.json || true
+        else
+          # Full scan
+          detect-secrets scan ${{ inputs.path }} > ${{ inputs.results-dir }}/secrets/detect-secrets.json || true
+        fi
+
+        # Count findings
+        if [ -f "${{ inputs.results-dir }}/secrets/detect-secrets.json" ]; then
+          total=$(jq '.results | to_entries | map(.value | length) | add // 0' ${{ inputs.results-dir }}/secrets/detect-secrets.json 2>/dev/null || echo "0")
+        else
+          total=0
+        fi
+
+        echo "detect-secrets-total=$total" >> $GITHUB_OUTPUT
+
+        echo "📊 detect-secrets found: $total potential secrets"
+
+    - name: Aggregate Results
+      id: aggregate
+      shell: bash
+      run: |
+        echo "📊 Aggregating secrets scan results..."
+
+        total=0
+        types=""
+
+        # Aggregate Gitleaks
+        if [ -f "${{ inputs.results-dir }}/secrets/gitleaks.json" ]; then
+          gitleaks_total=$(jq '. | length' ${{ inputs.results-dir }}/secrets/gitleaks.json 2>/dev/null || echo "0")
+          gitleaks_types=$(jq -r '[.[].RuleID] | unique | join(", ")' ${{ inputs.results-dir }}/secrets/gitleaks.json 2>/dev/null || echo "")
+          total=$((total + gitleaks_total))
+          types="$gitleaks_types"
+        fi
+
+        # Aggregate TruffleHog
+        if [ -f "${{ inputs.results-dir }}/secrets/trufflehog.json" ]; then
+          trufflehog_total=$(wc -l < ${{ inputs.results-dir }}/secrets/trufflehog.json | tr -d ' ')
+          total=$((total + trufflehog_total))
+        fi
+
+        # Aggregate detect-secrets
+        if [ -f "${{ inputs.results-dir }}/secrets/detect-secrets.json" ]; then
+          ds_total=$(jq '.results | to_entries | map(.value | length) | add // 0' ${{ inputs.results-dir }}/secrets/detect-secrets.json 2>/dev/null || echo "0")
+          total=$((total + ds_total))
+        fi
+
+        echo "total=$total" >> $GITHUB_OUTPUT
+        echo "types=$types" >> $GITHUB_OUTPUT
+
+        # Set SARIF path
+        if [ -f "${{ inputs.results-dir }}/secrets/gitleaks.sarif" ]; then
+          echo "sarif-path=${{ inputs.results-dir }}/secrets/gitleaks.sarif" >> $GITHUB_OUTPUT
+        fi
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  OSDO Secrets Scan Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Path: ${{ inputs.path }}"
+        echo "  Scan Mode: ${{ inputs.scan-mode }}"
+        echo "  Total Secrets Found: $total"
+        if [ -n "$types" ]; then
+          echo "  Secret Types: $types"
+        fi
+        echo "═══════════════════════════════════════"
+
+        if [ "$total" -gt 0 ]; then
+          echo "::warning::Found $total potential secrets in codebase"
+        fi
+
+    - name: Check Threshold
+      if: inputs.fail-on-finding == 'true'
+      shell: bash
+      run: |
+        total=${{ steps.aggregate.outputs.total }}
+
+        if [ "$total" -gt 0 ]; then
+          echo "❌ Found $total secrets in codebase"
+          echo "::error::Secrets detected in codebase - review and remove before proceeding"
+          
+          # Show summary of findings
+          if [ -f "${{ inputs.results-dir }}/secrets/gitleaks.json" ]; then
+            echo ""
+            echo "Gitleaks findings:"
+            jq -r '.[] | "  - \(.RuleID): \(.File):\(.StartLine)"' ${{ inputs.results-dir }}/secrets/gitleaks.json 2>/dev/null | head -10
+          fi
+          
+          exit 1
+        fi
+
+        echo "✅ No secrets detected in codebase"

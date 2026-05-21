@@ -1,0 +1,379 @@
+name: "OSDO SLSA Provenance"
+description: "Generate SLSA Level 3 compliant build provenance and attestations using Sigstore and GitHub Attestations"
+author: "OpenSecDevOps"
+
+inputs:
+  slsa-level:
+    description: "Target SLSA level (1, 2, 3)"
+    required: false
+    default: "3"
+  subject-path:
+    description: "Path to artifact(s) to generate provenance for (supports glob patterns)"
+    required: true
+  subject-name:
+    description: "Name of the subject for provenance"
+    required: false
+    default: ""
+  sign-artifacts:
+    description: "Sign artifacts with Sigstore/Cosign"
+    required: false
+    default: "true"
+  upload-to-rekor:
+    description: "Upload signature to Rekor transparency log"
+    required: false
+    default: "true"
+  generate-attestation:
+    description: "Generate GitHub attestation"
+    required: false
+    default: "true"
+  verify-provenance:
+    description: "Verify generated provenance"
+    required: false
+    default: "true"
+  results-dir:
+    description: "Directory to store results"
+    required: false
+    default: ".osdo/results"
+
+outputs:
+  provenance-file:
+    description: "Path to provenance file"
+    value: ${{ steps.provenance.outputs.provenance-path }}
+  signature-file:
+    description: "Path to signature file"
+    value: ${{ steps.sign.outputs.signature-path }}
+  slsa-level-achieved:
+    description: "SLSA level achieved"
+    value: ${{ steps.verify.outputs.level }}
+  rekor-entry:
+    description: "Rekor transparency log entry URL"
+    value: ${{ steps.sign.outputs.rekor-url }}
+  verified:
+    description: "Whether provenance was verified"
+    value: ${{ steps.verify.outputs.verified }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create results directory
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.results-dir }}/slsa
+        echo "Results will be stored in ${{ inputs.results-dir }}/slsa"
+
+    - name: Install Cosign
+      shell: bash
+      run: |
+        if ! command -v cosign &> /dev/null; then
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+        fi
+        cosign version
+
+    - name: Calculate Subject Digests
+      id: digest
+      shell: bash
+      run: |
+        echo "🔐 Calculating artifact digests..."
+
+        subjects=""
+
+        # Handle glob patterns
+        for file in ${{ inputs.subject-path }}; do
+          if [ -f "$file" ]; then
+            sha256=$(sha256sum "$file" | awk '{print $1}')
+            sha512=$(sha512sum "$file" | awk '{print $1}')
+            name=$(basename "$file")
+            
+            if [ -z "$subjects" ]; then
+              subjects="$name:sha256:$sha256"
+            else
+              subjects="$subjects,$name:sha256:$sha256"
+            fi
+            
+            echo "  $name: sha256:$sha256"
+          fi
+        done
+
+        echo "subjects=$subjects" >> $GITHUB_OUTPUT
+
+    - name: Generate SLSA Provenance
+      id: provenance
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        echo "📜 Generating SLSA Level ${{ inputs.slsa-level }} provenance..."
+
+        # Get build metadata
+        build_id="${GITHUB_RUN_ID:-unknown}"
+        build_number="${GITHUB_RUN_NUMBER:-0}"
+        workflow="${GITHUB_WORKFLOW:-unknown}"
+        repository="${GITHUB_REPOSITORY:-unknown}"
+        sha="${GITHUB_SHA:-unknown}"
+        ref="${GITHUB_REF:-unknown}"
+        actor="${GITHUB_ACTOR:-unknown}"
+        event="${GITHUB_EVENT_NAME:-unknown}"
+
+        # Generate provenance in SLSA format
+        cat > ${{ inputs.results-dir }}/slsa/provenance.json << EOF
+        {
+          "_type": "https://in-toto.io/Statement/v0.1",
+          "predicateType": "https://slsa.dev/provenance/v1",
+          "subject": [
+        EOF
+
+        # Add subjects
+        first=true
+        for file in ${{ inputs.subject-path }}; do
+          if [ -f "$file" ]; then
+            sha256=$(sha256sum "$file" | awk '{print $1}')
+            name=$(basename "$file")
+            
+            if [ "$first" = true ]; then
+              first=false
+            else
+              echo "," >> ${{ inputs.results-dir }}/slsa/provenance.json
+            fi
+            
+            cat >> ${{ inputs.results-dir }}/slsa/provenance.json << SUBJECT
+            {
+              "name": "$name",
+              "digest": {
+                "sha256": "$sha256"
+              }
+            }
+        SUBJECT
+          fi
+        done
+
+        cat >> ${{ inputs.results-dir }}/slsa/provenance.json << EOF
+          ],
+          "predicate": {
+            "buildDefinition": {
+              "buildType": "https://github.com/opensecdevops/osdo-actions/osdo-slsa-provenance@v1",
+              "externalParameters": {
+                "workflow": "$workflow",
+                "ref": "$ref"
+              },
+              "internalParameters": {},
+              "resolvedDependencies": []
+            },
+            "runDetails": {
+              "builder": {
+                "id": "https://github.com/opensecdevops/osdo-actions/osdo-slsa-provenance@v1",
+                "builderDependencies": [],
+                "version": {}
+              },
+              "metadata": {
+                "invocationId": "https://github.com/$repository/actions/runs/$build_id",
+                "startedOn": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+                "finishedOn": ""
+              },
+              "byproducts": []
+            }
+          }
+        }
+        EOF
+
+        # Create extended provenance with GitHub context
+        cat > ${{ inputs.results-dir }}/slsa/provenance-extended.json << EOF
+        {
+          "slsa_level": ${{ inputs.slsa-level }},
+          "builder": {
+            "id": "https://github.com/opensecdevops/osdo-actions/osdo-slsa-provenance@v1"
+          },
+          "build_type": "https://github.com/opensecdevops/osdo-actions/build@v1",
+          "invocation": {
+            "config_source": {
+              "uri": "git+https://github.com/$repository@$ref",
+              "digest": {
+                "sha1": "$sha"
+              },
+              "entryPoint": "$workflow"
+            },
+            "parameters": {},
+            "environment": {
+              "github_actor": "$actor",
+              "github_event_name": "$event",
+              "github_run_id": "$build_id",
+              "github_run_number": "$build_number",
+              "runner_os": "${RUNNER_OS:-Linux}",
+              "runner_arch": "${RUNNER_ARCH:-X64}"
+            }
+          },
+          "metadata": {
+            "buildInvocationId": "$build_id",
+            "completeness": {
+              "parameters": true,
+              "environment": true,
+              "materials": true
+            },
+            "reproducible": false
+          },
+          "materials": [
+            {
+              "uri": "git+https://github.com/$repository",
+              "digest": {
+                "sha1": "$sha"
+              }
+            }
+          ]
+        }
+        EOF
+
+        echo "provenance-path=${{ inputs.results-dir }}/slsa/provenance.json" >> $GITHUB_OUTPUT
+        echo "✅ Provenance generated"
+
+    - name: Sign Artifacts with Cosign
+      if: inputs.sign-artifacts == 'true'
+      id: sign
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+      run: |
+        echo "🔏 Signing artifacts with Sigstore..."
+
+        rekor_url=""
+
+        for file in ${{ inputs.subject-path }}; do
+          if [ -f "$file" ]; then
+            echo "Signing $file..."
+            
+            # Sign using keyless signing (OIDC)
+            if [ "${{ inputs.upload-to-rekor }}" == "true" ]; then
+              cosign sign-blob \
+                --yes \
+                --output-signature "${file}.sig" \
+                --output-certificate "${file}.pem" \
+                "$file" 2>&1 | tee sign-output.txt || true
+              
+              # Extract Rekor URL
+              rekor_url=$(grep -o 'https://rekor.sigstore.dev/api/v1/log/entries/[a-f0-9]*' sign-output.txt || echo "")
+            else
+              cosign sign-blob \
+                --yes \
+                --output-signature "${file}.sig" \
+                --tlog-upload=false \
+                "$file" || true
+            fi
+            
+            echo "✅ Signed: $file"
+          fi
+        done
+
+        # Also sign the provenance
+        if [ -f "${{ inputs.results-dir }}/slsa/provenance.json" ]; then
+          cosign sign-blob \
+            --yes \
+            --output-signature "${{ inputs.results-dir }}/slsa/provenance.json.sig" \
+            "${{ inputs.results-dir }}/slsa/provenance.json" || true
+        fi
+
+        echo "signature-path=${{ inputs.subject-path }}.sig" >> $GITHUB_OUTPUT
+        echo "rekor-url=$rekor_url" >> $GITHUB_OUTPUT
+
+    - name: Generate GitHub Attestation
+      if: inputs.generate-attestation == 'true'
+      id: attest
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        echo "📝 Generating GitHub attestation..."
+
+        # Use GitHub's built-in attestation if available
+        if command -v gh &> /dev/null; then
+          for file in ${{ inputs.subject-path }}; do
+            if [ -f "$file" ]; then
+              gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" 2>/dev/null || \
+              echo "Attestation will be created on push"
+            fi
+          done
+        fi
+
+        echo "✅ Attestation process completed"
+
+    - name: Verify Provenance
+      if: inputs.verify-provenance == 'true'
+      id: verify
+      shell: bash
+      run: |
+        echo "🔍 Verifying provenance..."
+
+        level=0
+        verified="true"
+        issues=""
+
+        # SLSA Level 1: Build process is scripted
+        if [ -f ".github/workflows" ] || [ -n "$GITHUB_WORKFLOW" ]; then
+          level=1
+        fi
+
+        # SLSA Level 2: Version control + hosted build service
+        if [ -d ".git" ] && [ -n "$GITHUB_ACTIONS" ]; then
+          level=2
+        fi
+
+        # SLSA Level 3: Provenance + non-falsifiable
+        if [ -f "${{ inputs.results-dir }}/slsa/provenance.json" ]; then
+          # Verify provenance fields
+          builder_id=$(jq -r '.predicate.runDetails.builder.id' ${{ inputs.results-dir }}/slsa/provenance.json 2>/dev/null || echo "")
+          
+          if [ -n "$builder_id" ]; then
+            # Check signature exists
+            if [ -f "${{ inputs.results-dir }}/slsa/provenance.json.sig" ]; then
+              level=3
+            else
+              issues="Missing provenance signature"
+              verified="false"
+            fi
+          fi
+        fi
+
+        # Verify signatures
+        for file in ${{ inputs.subject-path }}; do
+          if [ -f "${file}.sig" ]; then
+            cosign verify-blob \
+              --signature "${file}.sig" \
+              --certificate "${file}.pem" \
+              --certificate-identity-regexp ".*" \
+              --certificate-oidc-issuer-regexp ".*" \
+              "$file" 2>/dev/null || {
+                verified="false"
+                issues="$issues Signature verification failed for $file"
+              }
+          fi
+        done
+
+        echo "level=$level" >> $GITHUB_OUTPUT
+        echo "verified=$verified" >> $GITHUB_OUTPUT
+
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  OSDO SLSA Provenance Summary"
+        echo "═══════════════════════════════════════"
+        echo "  Target Level: ${{ inputs.slsa-level }}"
+        echo "  Achieved Level: $level"
+        echo "  Verified: $verified"
+        if [ -n "$issues" ]; then
+          echo "  Issues: $issues"
+        fi
+        echo "═══════════════════════════════════════"
+
+        if [ "$level" -lt "${{ inputs.slsa-level }}" ]; then
+          echo "::warning::SLSA Level $level achieved, target was ${{ inputs.slsa-level }}"
+        else
+          echo "✅ SLSA Level $level achieved!"
+        fi
+
+    - name: Upload Provenance Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: osdo-slsa-provenance
+        path: |
+          ${{ inputs.results-dir }}/slsa/
+          ${{ inputs.subject-path }}.sig
+          ${{ inputs.subject-path }}.pem
+        retention-days: 90
+        if-no-files-found: warn

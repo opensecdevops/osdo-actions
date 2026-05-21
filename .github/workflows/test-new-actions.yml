@@ -1,0 +1,155 @@
+name: "E2E Tests - New Security Actions"
+
+on:
+    push:
+        branches: [main]
+        paths:
+            - "actions/osdo-smart-contract-audit/**"
+            - "actions/osdo-llm-scan/**"
+            - "test/fixtures/**"
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    test-smart-contract-audit:
+        name: "Test: Smart Contract Audit"
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            # Test vulnerable contract - should find issues
+            - name: Test Vulnerable Contract
+              id: vulnerable
+              uses: ./actions/osdo-smart-contract-audit
+              continue-on-error: true
+              with:
+                  contracts-path: "test/fixtures/smart-contract"
+                  scanners: "slither"
+                  fail-on-severity: "HIGH"
+                  check-reentrancy: true
+
+            - name: Verify Vulnerable Detection
+              run: |
+                  if [ "${{ steps.vulnerable.outputs.scan-passed }}" == "true" ]; then
+                    echo "❌ FAIL: Should have detected vulnerabilities in VulnerableVault.sol"
+                    exit 1
+                  else
+                    echo "✅ PASS: Correctly detected vulnerabilities"
+                    echo "  - Vulnerabilities: ${{ steps.vulnerable.outputs.vulnerabilities-found }}"
+                    echo "  - Critical: ${{ steps.vulnerable.outputs.critical-count }}"
+                  fi
+
+            # Test secure contract - should pass
+            - name: Prepare Secure Only
+              run: |
+                  mkdir -p test/fixtures/smart-contract-secure
+                  cp test/fixtures/smart-contract/SecureVault.sol test/fixtures/smart-contract-secure/
+
+            - name: Test Secure Contract
+              id: secure
+              uses: ./actions/osdo-smart-contract-audit
+              with:
+                  contracts-path: "test/fixtures/smart-contract-secure"
+                  scanners: "slither"
+                  fail-on-severity: "CRITICAL"
+
+            - name: Verify Secure Pass
+              run: |
+                  echo "✅ Secure contract test completed"
+                  echo "  - Scan passed: ${{ steps.secure.outputs.scan-passed }}"
+
+    test-llm-scan:
+        name: "Test: LLM Security Scan"
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install Semgrep
+              run: pip install semgrep
+
+            # Test vulnerable app - should find issues
+            - name: Test Vulnerable LLM App
+              id: vulnerable
+              uses: ./actions/osdo-llm-scan
+              continue-on-error: true
+              with:
+                  source-path: "test/fixtures/llm-app"
+                  check-prompt-injection: true
+                  check-pii-exposure: true
+                  check-model-serialization: true
+                  fail-on-severity: "HIGH"
+
+            - name: Verify Vulnerable Detection
+              run: |
+                  VULNS="${{ steps.vulnerable.outputs.vulnerabilities-found }}"
+                  if [ "$VULNS" -eq 0 ]; then
+                    echo "❌ FAIL: Should have detected vulnerabilities"
+                    exit 1
+                  else
+                    echo "✅ PASS: Detected $VULNS vulnerabilities"
+                    echo "  - Critical: ${{ steps.vulnerable.outputs.critical-count }}"
+                    echo "  - High: ${{ steps.vulnerable.outputs.high-count }}"
+                  fi
+
+            # Test secure app - should have fewer/no issues
+            - name: Prepare Secure Only
+              run: |
+                  mkdir -p test/fixtures/llm-app-secure
+                  cp test/fixtures/llm-app/secure_app.py test/fixtures/llm-app-secure/
+
+            - name: Test Secure LLM App
+              id: secure
+              uses: ./actions/osdo-llm-scan
+              with:
+                  source-path: "test/fixtures/llm-app-secure"
+                  check-prompt-injection: true
+                  check-model-serialization: true
+                  fail-on-severity: "HIGH"
+
+            - name: Compare Results
+              run: |
+                  echo "═══════════════════════════════════════"
+                  echo "  E2E Test Results Summary"
+                  echo "═══════════════════════════════════════"
+                  echo "  Vulnerable App: ${{ steps.vulnerable.outputs.vulnerabilities-found }} vulns"
+                  echo "  Secure App: ${{ steps.secure.outputs.vulnerabilities-found }} vulns"
+                  echo "═══════════════════════════════════════"
+
+    summary:
+        name: "Test Summary"
+        needs: [test-smart-contract-audit, test-llm-scan]
+        runs-on: ubuntu-latest
+        if: always()
+        steps:
+            - name: Results
+              run: |
+                  echo "═══════════════════════════════════════"
+                  echo "  OSDO New Actions E2E Results"
+                  echo "═══════════════════════════════════════"
+                  echo "  Smart Contract: ${{ needs.test-smart-contract-audit.result }}"
+                  echo "  LLM Scan: ${{ needs.test-llm-scan.result }}"
+                  echo "═══════════════════════════════════════"
+
+                  if [ "${{ needs.test-smart-contract-audit.result }}" == "success" ] && \
+                     [ "${{ needs.test-llm-scan.result }}" == "success" ]; then
+                    echo "✅ All E2E tests passed!"
+                  else
+                    echo "❌ Some tests failed"
+                    exit 1
+                  fi

@@ -360,7 +360,6 @@ Para vulnerabilidades de seguridad, **NO** abras un issue público. En su lugar,
 - **22 Actions** en producción
 - **30+ Security Tools** integradas
 - **10+ Lenguajes** soportados
-- **100+ Proyectos** dependientes
 
 ---
 

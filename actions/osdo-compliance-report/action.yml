@@ -1,5 +1,9 @@
 name: 'OSDO Compliance Report'
 description: 'Generate comprehensive OSDO compliance and security report'
+branding:
+  icon: "file-text"
+  color: "green"
+
 inputs:
   test-results:
     description: 'Test results from quality gate'

@@ -1,0 +1,49 @@
+# Manual release. Creates an immutable repo-level tag vX.Y.Z on the commit this
+# run uses, then a GitHub release for it. Tags are never moved: the ref-creation
+# API call fails with 422 if the tag already exists. See RELEASING.md.
+name: Release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, semver with v prefix (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Tag and publish GitHub release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::version must be semver with v prefix, e.g. v1.2.3"
+            exit 1
+          fi
+
+      - name: Create immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh api --method POST "repos/${REPO}/git/refs" \
+            -f ref="refs/tags/${VERSION}" -f sha="${SHA}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --generate-notes

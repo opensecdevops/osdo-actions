@@ -2,6 +2,10 @@ name: "OSDO API Security Scan"
 description: "API security testing including OpenAPI validation, OWASP API Top 10, and schema validation"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "globe"
+  color: "blue"
+
 inputs:
   api-spec-path:
     description: "Path to API specification (OpenAPI/Swagger)"

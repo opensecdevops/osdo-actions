@@ -2,6 +2,10 @@ name: "OSDO Mobile Security Scan"
 description: "Mobile application security scanning for Android and iOS with MASVS compliance"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "smartphone"
+  color: "blue"
+
 inputs:
   platform:
     description: "Mobile platform (android, ios, react-native, flutter)"

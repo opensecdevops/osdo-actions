@@ -2,6 +2,10 @@ name: "OSDO SAST"
 description: "Static Application Security Testing with Semgrep, CodeQL, and language-specific analyzers"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "search"
+  color: "blue"
+
 inputs:
   path:
     description: "Path to scan for security vulnerabilities"

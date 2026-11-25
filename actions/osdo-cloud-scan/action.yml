@@ -2,6 +2,10 @@ name: "OSDO Cloud Security Scan"
 description: "Multi-cloud security scanning for AWS, Azure, and GCP with compliance checks"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "cloud"
+  color: "blue"
+
 inputs:
   cloud-provider:
     description: "Cloud provider (aws, azure, gcp, multi-cloud)"

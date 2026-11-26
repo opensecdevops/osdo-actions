@@ -143,7 +143,9 @@ runs:
         sarif="$OSDO_RESULTS/semgrep-llm.sarif"
         # Without --error, semgrep exits 0 when it finds issues and non-zero only when
         # it fails to run. Findings are counted from SARIF, so a broken run fails here.
-        semgrep --config "$rules" --config "p/python" --sarif --output "$sarif" "$OSDO_SOURCE"
+        # --x-ignore-semgrepignore-files: see osdo-sast/scripts/run-semgrep.sh. Without it,
+        # semgrep silently skips test/ and fixture paths in the scanned repository.
+        semgrep --x-ignore-semgrepignore-files --config "$rules" --config "p/python" --sarif --output "$sarif" "$OSDO_SOURCE"
         python3 -I "$GITHUB_ACTION_PATH/scripts/llm_checks.py" sarif \
           --sarif "$sarif" --findings "$OSDO_RESULTS/findings.tsv"
         echo "sarif=$sarif" >> "$GITHUB_OUTPUT"

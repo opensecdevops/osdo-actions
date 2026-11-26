@@ -122,37 +122,38 @@ def is_agent_file(name):
 
 
 def iter_files(source, results):
-    """Yield (path, agent_only) for regular files and (path, None) for symlinks.
+    """Yield (path, is_symlink, agent_only) for every entry worth checking.
 
-    Only two exclusions exist, both exact paths: <source>/.git and the results
-    directory. <source>/node_modules is walked but only agent-asset files inside it
-    are yielded (agent_only=True). Symlinks are reported, never followed.
+    Exclusions are exact paths: <source>/.git and the results directory. Inside
+    <source>/node_modules only agent-asset names are yielded (agent_only=True).
+    Symlinks are yielded with is_symlink=True and resolved by the caller; directory
+    walking never follows them.
     """
     git_path = os.path.join(source, ".git")
     node_path = os.path.join(source, "node_modules")
     for dirpath, dirnames, filenames in os.walk(source):
+        under_node = dirpath == node_path or dirpath.startswith(node_path + os.sep)
         kept = []
         for name in sorted(dirnames):
             full = os.path.join(dirpath, name)
             if full == results or full == git_path:
                 continue
             if os.path.islink(full):
-                yield full, None
+                yield full, True, under_node and not is_agent_file(name)
                 continue
             kept.append(name)
         dirnames[:] = kept
-        under_node = dirpath == node_path or dirpath.startswith(node_path + os.sep)
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             if full == git_path:
                 continue
             if os.path.islink(full):
-                yield full, None
+                yield full, True, under_node and not is_agent_file(name)
             elif under_node:
                 if is_agent_file(name):
-                    yield full, True
+                    yield full, False, True
             else:
-                yield full, False
+                yield full, False, False
 
 
 # ---------------------------------------------------------------- provider
@@ -171,7 +172,7 @@ def cmd_provider(args):
     for name, pattern in PROVIDER_PATTERNS:
         if detected != "unknown":
             break
-        for path, _ in iter_files(source, None):
+        for path, _, _ in iter_files(source, None):
             text, _ = read_text(path)
             if pattern.search(text):
                 detected = name
@@ -607,6 +608,42 @@ def run_text_checks(rel, path, text, base, ext, flags, findings, agent_only):
     return flags["shell"] and is_shell_script(path, text)
 
 
+def read_bytes(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError as exc:
+        fail(f"cannot read {path}: {exc}")
+
+
+def strict_clean_text(data):
+    """Return the text if the bytes are valid UTF-8 without control characters, else None."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return None if CONTROL_CHARS.search(text) else text
+
+
+def symlink_target_ok(path, rel, source, findings, agent_only):
+    """Decide whether a symlink's target is scanned. Every refusal is a finding."""
+    base = os.path.basename(path)
+    target = os.path.realpath(path)
+    if not os.path.exists(target):
+        findings.add("CODE", "MEDIUM", "broken-symlink", rel,
+                     "symlink target does not exist; nothing was scanned")
+        return False
+    if os.path.isdir(target):
+        findings.add("CODE", "MEDIUM", "symlink-to-directory", rel,
+                     f"symlink points at a directory ({target}); the link is not followed")
+        return False
+    if target != source and not target.startswith(source + os.sep):
+        findings.add("CODE", "MEDIUM", "symlink-escapes-source", rel,
+                     f"symlink resolves outside the scanned tree ({target}); content not scanned")
+        return False
+    return not (agent_only and not is_agent_file(base))
+
+
 def cmd_scan(args):
     source = require_dir(args.source)
     results = results_location(args.results_dir, source)
@@ -615,31 +652,34 @@ def cmd_scan(args):
     findings = Findings(args.findings)
     shell_candidates = []
 
-    for path, agent_only in iter_files(source, results):
+    for path, is_symlink, agent_only in iter_files(source, results):
         rel = os.path.relpath(path, source)
-        if agent_only is None:
-            target = os.path.realpath(path)
-            if target != source and not target.startswith(source + os.sep):
-                findings.add("CODE", "MEDIUM", "symlink-escapes-source", rel,
-                             f"symlink resolves outside the scanned tree ({target}); its content is not scanned")
-            continue
         base = os.path.basename(path)
         ext = os.path.splitext(base)[1].lower()
-        if ext in BINARY_EXTS:
+        # Checks are selected by the name seen in the tree: for a symlink that is the
+        # link's name, not the target's.
+        if is_symlink and not symlink_target_ok(path, rel, source, findings, agent_only):
             continue
-        text, has_controls = read_text(path)
-        if has_controls:
-            if ext in TEXT_EXTS or is_agent_file(base):
-                match = CONTROL_CHARS.search(text)
-                line = text.count("\n", 0, match.start()) + 1
-                findings.add("LLM01", "HIGH", "control-characters-in-text", f"{rel}:{line}",
-                             "NUL or control characters in a text file can hide instructions from review")
-            else:
-                findings.add("CODE", "LOW", "unscanned-binary-content", rel,
-                             "NUL or control bytes and no recognised text extension; not scanned as text")
+        if ext in BINARY_EXTS:
+            # A binary extension is a claim, not a fact. Clean UTF-8 content is scanned as text.
+            text = strict_clean_text(read_bytes(path))
+            if text is None:
                 continue
-        is_shell = run_text_checks(rel, path, text, base, ext, flags, findings, agent_only)
-        if is_shell:
+            check_ext = ".txt"
+        else:
+            text, has_controls = read_text(path)
+            if has_controls:
+                if ext in TEXT_EXTS or is_agent_file(base):
+                    match = CONTROL_CHARS.search(text)
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.add("LLM01", "HIGH", "control-characters-in-text", f"{rel}:{line}",
+                                 "NUL or control characters in a text file can hide instructions from review")
+                else:
+                    findings.add("CODE", "LOW", "unscanned-binary-content", rel,
+                                 "NUL or control bytes and no recognised text extension; not scanned as text")
+                    continue
+            check_ext = ext
+        if run_text_checks(rel, path, text, base, check_ext, flags, findings, agent_only):
             shell_candidates.append(rel)
 
     if flags["shell"]:

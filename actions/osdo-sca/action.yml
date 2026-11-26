@@ -117,30 +117,19 @@ runs:
       if: contains(inputs.scanners, 'osv') || contains(inputs.scanners, 'all')
       id: osv
       shell: bash
+      env:
+        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_SCAN_PATH: ${{ inputs.path }}
       run: |
+        set -euo pipefail
         echo "🔍 Running OSV-Scanner..."
 
-        # Install OSV-Scanner
         if ! command -v osv-scanner &> /dev/null; then
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
           chmod +x /usr/local/bin/osv-scanner
         fi
 
-        # Run OSV-Scanner
-        osv-scanner --format json --output ${{ inputs.results-dir }}/sca/osv.json -r ${{ inputs.path }} || true
-
-        # Extract counts
-        total=$(jq '.results[].packages | length' ${{ inputs.results-dir }}/sca/osv.json 2>/dev/null | awk '{s+=$1} END {print s+0}')
-
-        # Count by severity (OSV uses CVSS scores)
-        critical=$(jq '[.results[].packages[].vulnerabilities[]? | select(.database_specific.severity == "CRITICAL" or (.severity[]?.score // 0) >= 9.0)] | length' ${{ inputs.results-dir }}/sca/osv.json 2>/dev/null || echo "0")
-        high=$(jq '[.results[].packages[].vulnerabilities[]? | select(.database_specific.severity == "HIGH" or ((.severity[]?.score // 0) >= 7.0 and (.severity[]?.score // 0) < 9.0))] | length' ${{ inputs.results-dir }}/sca/osv.json 2>/dev/null || echo "0")
-
-        echo "osv-total=$total" >> $GITHUB_OUTPUT
-        echo "osv-critical=$critical" >> $GITHUB_OUTPUT
-        echo "osv-high=$high" >> $GITHUB_OUTPUT
-
-        echo "📊 OSV-Scanner found: $total vulnerable packages ($critical critical, $high high)"
+        bash "$GITHUB_ACTION_PATH/scripts/run-osv.sh"
 
     - name: Grype SCA
       if: contains(inputs.scanners, 'grype') || contains(inputs.scanners, 'all')

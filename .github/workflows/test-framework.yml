@@ -287,6 +287,9 @@ jobs:
             - name: osdo-setup-env cache detection
               run: bash actions/osdo-setup-env/test.sh
 
+            - name: osdo-sca osv-scanner handling
+              run: bash actions/osdo-sca/test.sh
+
     # ============================================
     # E2E Tests
     # ============================================

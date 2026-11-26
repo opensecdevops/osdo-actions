@@ -284,6 +284,9 @@ jobs:
             - name: osdo-smart-contract-audit scripts
               run: bash actions/osdo-smart-contract-audit/test.sh
 
+            - name: osdo-setup-env cache detection
+              run: bash actions/osdo-setup-env/test.sh
+
     # ============================================
     # E2E Tests
     # ============================================

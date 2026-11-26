@@ -24,6 +24,9 @@ CHECKED_FILES = [
     "actions/osdo-sbom/action.yml",
     "actions/osdo-slsa-provenance/action.yml",
     "actions/osdo-llm-scan/action.yml",
+    "actions/osdo-setup-env/action.yml",
+    ".github/workflows/test-new-actions.yml",
+    "actions/osdo-smart-contract-audit/action.yml",
 ]
 
 STRICT_FILES = [

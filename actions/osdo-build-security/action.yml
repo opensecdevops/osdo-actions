@@ -2,6 +2,10 @@ name: "OSDO Build Security & SBOM"
 description: "Secure build process with SBOM generation and build verification"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "tool"
+  color: "gray-dark"
+
 inputs:
   build-command:
     description: "Build command to execute"

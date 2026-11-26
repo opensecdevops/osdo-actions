@@ -2,6 +2,10 @@ name: "OSDO Security Quality Gate"
 description: "Evaluate security quality gate based on vulnerability thresholds and compliance metrics"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "shield"
+  color: "green"
+
 inputs:
   critical-threshold:
     description: "Maximum allowed critical vulnerabilities"

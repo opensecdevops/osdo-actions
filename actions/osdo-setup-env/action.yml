@@ -2,6 +2,10 @@ name: "OSDO Setup Environment"
 description: "Setup base environment for OSDO security compliance pipeline"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "settings"
+  color: "gray-dark"
+
 inputs:
   node-version:
     description: "Node.js version to use"

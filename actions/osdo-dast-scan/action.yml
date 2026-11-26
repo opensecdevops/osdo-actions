@@ -2,6 +2,10 @@ name: "OSDO DAST Scan"
 description: "Dynamic Application Security Testing with OWASP ZAP and security headers validation"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "activity"
+  color: "red"
+
 inputs:
   target-url:
     description: "Target URL to scan"

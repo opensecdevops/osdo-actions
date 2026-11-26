@@ -1,37 +1,41 @@
+English | [Español](README.es.md)
+
 # OSDO Actions
+
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/opensecdevops/osdo-actions/badge)](https://securityscorecards.dev/viewer/?uri=github.com/opensecdevops/osdo-actions)
 
 **Open SecDevOps (OSDO) - Actions Repository**
 
-Monorepo centralizado que mantiene todas las **GitHub Actions granulares** para el framework OSDO. Cada acción es **independiente, versionada y reutilizable**.
+Centralized monorepo that maintains all the **granular GitHub Actions** for the OSDO framework. Each action is **independent, versioned and reusable**.
 
 ---
 
-## 📚 Tabla de Contenidos
+## 📚 Table of Contents
 
-- [Descripción](#descripción)
-- [Estructura](#estructura)
-- [Acciones Disponibles](#acciones-disponibles)
-- [Uso Rápido](#uso-rápido)
-- [Versionado](#versionado)
-- [Relación con Otros Repos](#relación-con-otros-repos)
-- [Contribución](#contribución)
-- [Soporte](#soporte)
-
----
-
-## Descripción
-
-`osdo-actions` es un **monorepo** que alberga todas las GitHub Actions utilizadas por el framework OSDO. Proporciona:
-
-**Acciones Granulares** - Cada herramienta de seguridad en una acción independiente  
-**Versionado Semántico** - Control de versiones independiente por acción  
-**Reutilización** - Úsalas en tus propios workflows  
-**Publicación Centralizada** - Un único workflow para publicar todas  
-**Documentación Completa** - Cada acción bien documentada  
+- [Description](#description)
+- [Structure](#structure)
+- [Available Actions](#available-actions)
+- [Quick Start](#quick-start)
+- [Versioning](#versioning)
+- [Relationship with Other Repos](#relationship-with-other-repos)
+- [Contributing](#contributing)
+- [Support](#support)
 
 ---
 
-## Estructura
+## Description
+
+`osdo-actions` is a **monorepo** that hosts all the GitHub Actions used by the OSDO framework. It provides:
+
+**Granular Actions** - Each security tool in its own independent action
+**Semantic Versioning** - Independent versioning per action
+**Reusability** - Use them in your own workflows
+**Centralized Publishing** - A single workflow to publish all of them
+**Complete Documentation** - Every action is well documented
+
+---
+
+## Structure
 
 ```
 osdo-actions/
@@ -40,63 +44,63 @@ osdo-actions/
 │   │   └── action.yml               # npm audit, Safety, etc.
 │   ├── osdo-sast/                   # Static Application Security Testing
 │   │   └── action.yml               # Semgrep, Bandit, etc.
-│   ├── osdo-secrets-scan/           # Detección de secretos
+│   ├── osdo-secrets-scan/           # Secret detection
 │   │   └── action.yml               # TruffleHog, Gitleaks
 │   ├── osdo-container-scan/         # Container security
 │   │   └── action.yml               # Trivy, Hadolint
 │   ├── osdo-iac-scan/               # Infrastructure as Code scanning
 │   │   └── action.yml               # Checkov, TFLint, etc.
 │   ├── osdo-sbom/                   # Software Bill of Materials
-│   │   └── action.yml               # CycloneDX, generación
+│   │   └── action.yml               # CycloneDX, generation
 │   ├── osdo-sign/                   # Code signing & attestation
 │   │   └── action.yml               # cosign, attestation
 │   ├── osdo-test-quality/           # Test & quality checks
 │   │   └── action.yml               # Coverage, quality gates
 │   └── osdo-compliance-report/      # Compliance reporting
-│       └── action.yml               # Reporte de compliance
+│       └── action.yml               # Compliance report
 ├── .github/
 │   └── workflows/
-│       └── publish.yml              # Publicar releases
-├── docs/                            # Documentación específica
-├── README.md                        # Este archivo
-├── CHANGELOG.md                     # Historial de versiones
+│       └── publish.yml              # Publish releases
+├── docs/                            # Specific documentation
+├── README.md                        # This file
+├── CHANGELOG.md                     # Version history
 └── LICENSE
 ```
 
 ---
 
-## Acciones Disponibles
+## Available Actions
 
-| Acción | Propósito | Versión | Use |
-|--------|-----------|---------|-----|
-| **osdo-sca** | Análisis de composición de software | v1.0.0+ | npm, pip, maven, etc. |
-| **osdo-sast** | Análisis estático de código | v1.0.0+ | Semgrep, Bandit, etc. |
-| **osdo-secrets-scan** | Detección de secretos | v1.0.0+ | TruffleHog, Gitleaks |
-| **osdo-container-scan** | Escaneo de contenedores | v1.0.0+ | Trivy, Grype, Hadolint, SBOM |
+| Action | Purpose | Version | Used for |
+|--------|---------|---------|----------|
+| **osdo-sca** | Software composition analysis | v1.0.0+ | npm, pip, maven, etc. |
+| **osdo-sast** | Static code analysis | v1.0.0+ | Semgrep, Bandit, etc. |
+| **osdo-secrets-scan** | Secret detection | v1.0.0+ | TruffleHog, Gitleaks |
+| **osdo-container-scan** | Container scanning | v1.0.0+ | Trivy, Grype, Hadolint, SBOM |
 | **osdo-iac-scan** | Infrastructure as Code | v1.0.0+ | Checkov, KICS, tfsec, Terrascan |
 | **osdo-sbom** | Bill of Materials | v1.0.0+ | CycloneDX, SPDX |
 | **osdo-sign** | Code signing | v1.0.0+ | cosign, attestation |
 | **osdo-test-quality** | Tests & quality | v1.0.0+ | Coverage, gates |
-| **osdo-compliance-report** | Compliance report | v1.0.0+ | Consolidación de reportes |
-| **osdo-dast-scan** | Dynamic App Security Testing | v1.0.0+ | OWASP ZAP, SSL/TLS checks |
-| **osdo-api-scan** | API Security Testing | v1.0.0+ | OpenAPI validation, fuzzing |
-| **osdo-mobile-scan** | Mobile Security | v1.0.0+ | MASVS compliance, iOS/Android |
-| **osdo-cloud-scan** | Cloud Security | v1.0.0+ | AWS/Azure/GCP, Prowler |
-| **osdo-license-scan** | License Compliance | v1.0.0+ | License detection, policy enforcement |
-| **osdo-llm-scan** | LLM/AI Security | v1.0.0+ | Prompt injection, model security |
-| **osdo-build-security** | Build seguro con SBOM | v1.0.0+ | Build hardening, generación de SBOM |
-| **osdo-fuzz** | Fuzzing de aplicaciones | v1.0.0+ | Go, Python Atheris, Rust cargo-fuzz, JS jsfuzz, C/C++ AFL++ |
+| **osdo-compliance-report** | Compliance report | v1.0.0+ | Report consolidation |
+| **osdo-dast-scan** | Dynamic Application Security Testing | v1.0.0+ | OWASP ZAP, SSL/TLS checks |
+| **osdo-api-scan** | API security testing | v1.0.0+ | OpenAPI validation, fuzzing |
+| **osdo-mobile-scan** | Mobile security | v1.0.0+ | MASVS compliance, iOS/Android |
+| **osdo-cloud-scan** | Cloud security | v1.0.0+ | AWS/Azure/GCP, Prowler |
+| **osdo-license-scan** | License compliance | v1.0.0+ | License detection, policy enforcement |
+| **osdo-llm-scan** | LLM/AI security | v1.0.0+ | Prompt injection, model security |
+| **osdo-build-security** | Secure build with SBOM | v1.0.0+ | Build hardening, SBOM generation |
+| **osdo-fuzz** | Application fuzzing | v1.0.0+ | Go, Python Atheris, Rust cargo-fuzz, JS jsfuzz, C/C++ AFL++ |
 | **osdo-policy-gate** | Policy as Code | v1.0.0+ | OPA, Kyverno |
-| **osdo-security-gate** | Quality gate de seguridad | v1.0.0+ | Umbral de severidades, bloqueo de pipeline |
-| **osdo-setup-env** | Configuración del entorno | v1.0.0+ | Setup de herramientas y variables de entorno |
+| **osdo-security-gate** | Security quality gate | v1.0.0+ | Severity thresholds, pipeline blocking |
+| **osdo-setup-env** | Environment setup | v1.0.0+ | Tool setup and environment variables |
 | **osdo-slsa-provenance** | SLSA Provenance | v1.0.0+ | SLSA Level 3, Sigstore/Cosign, Rekor |
-| **osdo-smart-contract-audit** | Auditoría de smart contracts | v1.0.0+ | Slither, Mythril, Solhint para Solidity |
+| **osdo-smart-contract-audit** | Smart contract auditing | v1.0.0+ | Slither, Mythril, Solhint for Solidity |
 
 ---
 
-## Uso Rápido
+## Quick Start
 
-### Usar una Acción Individual
+### Use a Single Action
 
 ```yaml
 name: Security Scan
@@ -111,7 +115,7 @@ jobs:
         with:
           fetch-depth: 0
       
-      # Usar acción directamente
+      # Use the action directly
       - name: SCA Scan
         uses: opensecdevops/osdo-actions/actions/osdo-sca@osdo-sca/v1.0.0
         with:
@@ -120,7 +124,7 @@ jobs:
           enable-python: true
 ```
 
-### Combinar Múltiples Acciones
+### Combine Multiple Actions
 
 ```yaml
 jobs:
@@ -144,164 +148,164 @@ jobs:
 
 ---
 
-## Versionado
+## Versioning
 
-Cada acción sigue **Semantic Versioning** con tags independientes:
+Each action follows **Semantic Versioning** with independent tags:
 
 ```
 osdo-<action-name>/v<MAJOR>.<MINOR>.<PATCH>
 ```
 
-**Ejemplos:**
+**Examples:**
 ```
-osdo-sca/v1.0.0              # Primera versión
-osdo-sca/v1.1.0              # Nueva feature (backwards compatible)
+osdo-sca/v1.0.0              # First version
+osdo-sca/v1.1.0              # New feature (backwards compatible)
 osdo-sast/v2.0.0             # Breaking change
 ```
 
-### Publicar Nueva Versión
+### Publish a New Version
 
 ```bash
-# 1. Hacer cambios a la acción
-git checkout -b feature/mejora-sca
+# 1. Make changes to the action
+git checkout -b feature/improve-sca
 
-# 2. Editar acción
+# 2. Edit the action
 # actions/osdo-sca/action.yml
 
-# 3. Commit y Push
+# 3. Commit and push
 git add .
-git commit -m "feat(osdo-sca): agregar soporte para npm semver ranges"
-git push origin feature/mejora-sca
+git commit -m "feat(osdo-sca): add support for npm semver ranges"
+git push origin feature/improve-sca
 
-# 4. Crear PR y obtener aprobación
+# 4. Open a PR and get approval
 
-# 5. Mergear a main
+# 5. Merge into main
 
-# 6. Publicar release
+# 6. Publish the release
 gh release create osdo-sca/v1.1.0 \
   --title "Release: osdo-sca v1.1.0" \
-  --notes "Soporte para npm semver ranges"
+  --notes "Support for npm semver ranges"
 ```
 
 ---
 
-## Relación con Otros Repos
+## Relationship with Other Repos
 
-### Arquitectura de Tres Capas
+### Three-Layer Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
-│     osdo-workflow-template (Orquestador)         │
-│  Usa acciones de osdo-actions + osdo-workflows   │
+│     osdo-workflow-template (Orchestrator)        │
+│  Uses actions from osdo-actions + osdo-workflows │
 └────────────────────┬─────────────────────────────┘
                      │
          ┌───────────┴───────────┐
          │                       │
     ┌────▼────────────┐    ┌─────▼──────────────┐
     │  osdo-actions   │    │  osdo-workflows    │
-    │  (Granulares)   │    │  (Reutilizables)   │
+    │  (Granular)     │    │  (Reusable)        │
     └─────────────────┘    └────────────────────┘
 ```
 
-### **osdo-actions** (Este Repositorio)
-- Acciones **granulares** e **independientes**
-- Cada herramienta = 1 acción
-- Reutilizables en cualquier contexto
-- Versionadas individualmente
+### **osdo-actions** (This Repository)
+- **Granular** and independent actions
+- One tool = one action
+- Reusable in any context
+- Individually versioned
 
-**Úsalas cuando:**
-- Necesites **control granular**
-- Quieras combinar herramientas **específicas**
-- Desarrolles tus **propias orquestaciones**
+**Use it when:**
+- You need **granular control**
+- You want to combine **specific** tools
+- You are building your **own orchestrations**
 
 ---
 
 ### **osdo-workflow-template**
-- 🎯 Framework **completo** y **opinado**
-- 🔗 Orquestra acciones de `osdo-actions`
-- 📦 Proporciona workflows reutilizables
-- ⚙️ Best practices preconfiguradas
+- 🎯 **Complete** and **opinionated** framework
+- 🔗 Orchestrates actions from `osdo-actions`
+- 📦 Provides reusable workflows
+- ⚙️ Preconfigured best practices
 
-**Úsalas cuando:**
-- Quieras un pipeline **completo**
-- No necesites **customización extrema**
-- Busques **"security by default"**
+**Use it when:**
+- You want a **complete** pipeline
+- You don't need **extreme customization**
+- You are looking for **security by default**
 
 ---
 
 ### **osdo-workflows**
-- 📋 Workflows reutilizables
-- 🎯 Para scenarios específicos
-- 🔄 Complementarios al framework
+- 📋 Reusable workflows
+- 🎯 For specific scenarios
+- 🔄 Complementary to the framework
 
 ---
 
-## 🤝 Cómo Contribuir
+## 🤝 How to Contribute
 
-### 1️⃣ Reportar Issues
+### 1️⃣ Report Issues
 
-Encuentra un bug o tienes una idea? Abre un [GitHub Issue](https://github.com/opensecdevops/osdo-actions/issues):
+Found a bug or have an idea? Open a [GitHub Issue](https://github.com/opensecdevops/osdo-actions/issues):
 
 ```
-Título: [BUG] osdo-sca no detecta vulnerabilidades en Node.js v18
+Title: [BUG] osdo-sca does not detect vulnerabilities in Node.js v18
 
-Descripción:
-- Qué pasó: ...
-- Qué esperabas: ...
-- Cómo reproducirlo: ...
-- Versión: osdo-sca/v1.0.0
+Description:
+- What happened: ...
+- What you expected: ...
+- How to reproduce: ...
+- Version: osdo-sca/v1.0.0
 ```
 
-### 2️⃣ Contribuir Código
+### 2️⃣ Contribute Code
 
 ```bash
-# 1. Fork y clonar
-git clone https://github.com/tu-usuario/osdo-actions.git
+# 1. Fork and clone
+git clone https://github.com/your-username/osdo-actions.git
 cd osdo-actions
 
-# 2. Crear rama
-git checkout -b feature/nueva-herramienta
+# 2. Create a branch
+git checkout -b feature/new-tool
 
-# 3. Desarrollar nueva acción
-mkdir -p actions/osdo-tu-accion
-# Crear action.yml, entrypoint.sh, README.md
+# 3. Develop the new action
+mkdir -p actions/osdo-your-action
+# Create action.yml, entrypoint.sh, README.md
 
-# 4. Escribir tests
-# tests/osdo-tu-accion/
+# 4. Write tests
+# tests/osdo-your-action/
 
-# 5. Documentar
-# actions/osdo-tu-accion/README.md
+# 5. Document it
+# actions/osdo-your-action/README.md
 
-# 6. Commit y push
+# 6. Commit and push
 git add .
-git commit -m "feat(osdo-tu-accion): descripción clara"
-git push origin feature/nueva-herramienta
+git commit -m "feat(osdo-your-action): clear description"
+git push origin feature/new-tool
 
-# 7. Abrir Pull Request
+# 7. Open a Pull Request
 ```
 
-### 3️⃣ Estructura de Nueva Acción
+### 3️⃣ New Action Structure
 
 ```yaml
-# actions/osdo-tu-accion/action.yml
-name: 'OSDO - Tu Acción'
-description: 'Descripción clara y concisa'
+# actions/osdo-your-action/action.yml
+name: 'OSDO - Your Action'
+description: 'Clear and concise description'
 author: 'OpenSecDevOps'
 
 inputs:
   results-dir:
-    description: 'Directorio de resultados'
+    description: 'Results directory'
     required: false
     default: '.osdo/results'
   
   enable-feature:
-    description: 'Habilitar feature X'
+    description: 'Enable feature X'
     required: false
     default: 'true'
 
 outputs:
   vulnerabilities-found:
-    description: 'Total de vulnerabilidades'
+    description: 'Total vulnerabilities'
     value: ${{ steps.scan.outputs.vulnerabilities-found }}
 
 runs:
@@ -313,51 +317,49 @@ runs:
 ### 4️⃣ Guidelines
 
 ✅ **DO:**
-- Documentar inputs/outputs
-- Incluir ejemplos de uso
-- Seguir convenciones (naming, estructura)
-- Versionar según semver
-- Escribir tests
+- Document inputs and outputs
+- Include usage examples
+- Follow conventions (naming, structure)
+- Version according to semver
+- Write tests
 
 ❌ **DON'T:**
-- Mezclar responsabilidades
-- Hardcodear valores
-- Omitir documentación
-- Breaking changes sin major version bump
+- Mix responsibilities
+- Hardcode values
+- Skip documentation
+- Make breaking changes without a major version bump
 
 ---
 
-## 📚 Documentación
+## 📚 Documentation
 
-- 📖 [ARCHITECTURE.md](../ARCHITECTURE.md) - Cómo todo encaja
-- 📋 [INTEGRATION_GUIDE.md](../INTEGRATION_GUIDE.md) - Integración completa
-- 🤝 [CONTRIBUTING.md](../CONTRIBUTING.md) - Guía detallada de contribución
-- 🔧 [docs/ACTIONS_REFERENCE.md](docs/ACTIONS_REFERENCE.md) - Referencia técnica
+- 🔧 [docs/ACTIONS_REFERENCE.md](docs/ACTIONS_REFERENCE.md) - Technical reference
+- 🚀 [docs/QUICKSTART.md](docs/QUICKSTART.md) - Quick start
+- 🏅 [docs/OPENSSF_BADGE_GUIDE.md](docs/OPENSSF_BADGE_GUIDE.md) - OpenSSF Badge guide
+- ✅ [docs/CERTIFICATION_CHECKLISTS.md](docs/CERTIFICATION_CHECKLISTS.md) - Certification checklists
 
 ---
 
-## 🆘 Soporte
+## 🆘 Support
 
-### Encuentra Ayuda
+### Get Help
 
-- 📖 [Ejemplos Completos](docs/examples.md)
-- 🐛 [Troubleshooting](docs/TROUBLESHOOTING.md)
+- 📖 [Full Examples](docs/QUICKSTART.md)
 - 💬 [GitHub Discussions](https://github.com/opensecdevops/osdo-actions/discussions)
 - 🐙 [GitHub Issues](https://github.com/opensecdevops/osdo-actions/issues)
 
-### Reportar Seguridad
+### Report Security Issues
 
-Para vulnerabilidades de seguridad, **NO** abras un issue público. En su lugar, usa:
+For security vulnerabilities, do **NOT** open a public issue. Instead, use:
 [GitHub Security Advisory](https://github.com/opensecdevops/osdo-actions/security/advisories)
 
 ---
 
-## 📊 Impacto
+## 📊 Impact
 
-- **22 Actions** en producción
-- **30+ Security Tools** integradas
-- **10+ Lenguajes** soportados
-- **100+ Proyectos** dependientes
+- **22 Actions** in production
+- **30+ Security Tools** integrated
+- **10+ Languages** supported
 
 ---
 
@@ -372,22 +374,21 @@ Para vulnerabilidades de seguridad, **NO** abras un issue público. En su lugar,
 - [ ] ML-based anomaly detection
 - [ ] Custom rule engine
 
+---
+
+## 📄 License
+
+MIT License - See [LICENSE](LICENSE)
 
 ---
 
-## 📄 Licencia
+## 🌟 Like It? Give It a Star ⭐
 
-MIT License - Ver [LICENSE](LICENSE)
-
----
-
-## 🌟 ¿Te Gusta? Dale una Estrella ⭐
-
-Si encuentras útil este proyecto, por favor dale una estrella en [GitHub](https://github.com/opensecdevops/osdo-actions). Ayuda a otros a descubrirlo!
+If you find this project useful, please give it a star on [GitHub](https://github.com/opensecdevops/osdo-actions). It helps others discover it!
 
 ---
 
-**OSDO Actions** - Seguridad modular, escalable y reutilizable.
+**OSDO Actions** - Modular, scalable and reusable security.
 
 Made with ❤️ by the OpenSecDevOps Community  
 [Website](https://opensecdevops.dev) | [Twitter](https://twitter.com/opensecdevops) | [Slack](https://opensecdevops.slack.com)

@@ -1,5 +1,9 @@
 name: 'OSDO Test Quality Gate'
 description: 'Execute comprehensive testing and quality checks for OSDO compliance'
+branding:
+  icon: "check-circle"
+  color: "green"
+
 inputs:
   test-coverage-threshold:
     description: 'Minimum test coverage percentage'

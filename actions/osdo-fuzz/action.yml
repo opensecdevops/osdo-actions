@@ -2,6 +2,10 @@ name: "OSDO Fuzz Testing"
 description: "Fuzz testing for security vulnerability discovery using OSS-Fuzz, AFL++, and language-specific fuzzers"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "zap"
+  color: "orange"
+
 inputs:
   target-path:
     description: "Path to code or fuzz targets"

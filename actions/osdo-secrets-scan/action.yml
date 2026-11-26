@@ -2,6 +2,10 @@ name: "OSDO Secrets Scan"
 description: "Scan for secrets and credentials in code using Gitleaks, TruffleHog, and detect-secrets"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "key"
+  color: "red"
+
 inputs:
   path:
     description: "Path to scan for secrets"

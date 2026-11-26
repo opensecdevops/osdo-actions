@@ -2,6 +2,10 @@ name: "OSDO Policy Gate"
 description: "Policy-as-Code enforcement using Open Policy Agent (OPA) and Kyverno for security and compliance validation"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "check-square"
+  color: "green"
+
 inputs:
   policy-engine:
     description: "Policy engine to use (opa, kyverno, both)"

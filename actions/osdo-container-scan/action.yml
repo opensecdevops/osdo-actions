@@ -2,6 +2,10 @@ name: "OSDO Container Security Scan"
 description: "Comprehensive container security scanning including image vulnerabilities, Dockerfile linting, and SBOM generation"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "box"
+  color: "blue"
+
 inputs:
   image-name:
     description: "Container image name to scan"

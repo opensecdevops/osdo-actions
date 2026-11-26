@@ -2,6 +2,10 @@ name: 'OSDO Sign'
 description: 'Sign artifacts and container images'
 author: 'OpenSecDevOps'
 
+branding:
+  icon: "pen-tool"
+  color: "purple"
+
 inputs:
   artifact:
     description: 'Artifact or image to sign'

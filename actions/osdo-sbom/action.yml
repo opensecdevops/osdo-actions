@@ -2,6 +2,10 @@ name: "OSDO SBOM"
 description: "Generate Software Bill of Materials (SBOM) in SPDX and CycloneDX formats using Syft"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "package"
+  color: "green"
+
 inputs:
   path:
     description: "Path to generate SBOM from (directory or container image)"

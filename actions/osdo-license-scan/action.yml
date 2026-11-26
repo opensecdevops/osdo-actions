@@ -2,6 +2,10 @@ name: "OSDO License Compliance Scan"
 description: "License detection and compliance checking for multiple package managers"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "book-open"
+  color: "green"
+
 inputs:
   package-manager:
     description: "Package manager (npm, pip, maven, gradle, go, all)"

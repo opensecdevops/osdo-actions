@@ -2,6 +2,10 @@ name: "OSDO IaC Security Scan"
 description: "Infrastructure as Code security scanning with Checkov, KICS, tfsec, Terrascan and Kubernetes validation"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "layers"
+  color: "blue"
+
 inputs:
   iac-directory:
     description: "Directory containing IaC files"

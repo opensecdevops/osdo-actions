@@ -2,6 +2,10 @@ name: "OSDO SLSA Provenance"
 description: "Generate SLSA Level 3 compliant build provenance and attestations using Sigstore and GitHub Attestations"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "award"
+  color: "purple"
+
 inputs:
   slsa-level:
     description: "Target SLSA level (1, 2, 3)"

@@ -2,6 +2,10 @@ name: "OSDO SCA"
 description: "Software Composition Analysis - Scan dependencies for vulnerabilities using OSV-Scanner, Grype, and native package managers"
 author: "OpenSecDevOps"
 
+branding:
+  icon: "alert-triangle"
+  color: "orange"
+
 inputs:
   path:
     description: "Path to scan for dependency vulnerabilities"

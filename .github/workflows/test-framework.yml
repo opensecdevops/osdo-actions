@@ -24,7 +24,7 @@ jobs:
         name: Test osdo-sast
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Test Clean Code
               run: |
@@ -39,19 +39,25 @@ jobs:
               uses: ./actions/osdo-sast
               with:
                   path: test-project
-              continue-on-error: true
 
             - name: Verify Clean Code Passes
-              if: steps.sast.outputs.vulnerabilities-found != '0'
+              env:
+                  FINDINGS: ${{ steps.sast.outputs.findings }}
               run: |
-                  echo "Clean code should have 0 findings"
-                  exit 1
+                  if [ -z "$FINDINGS" ]; then
+                    echo "::error::osdo-sast reported no findings output; the scan did not produce a result"
+                    exit 1
+                  fi
+                  if [ "$FINDINGS" != "0" ]; then
+                    echo "::error::clean code should have 0 findings, got $FINDINGS"
+                    exit 1
+                  fi
 
     test-osdo-sast-vulnerable:
         name: Test osdo-sast (vulnerable)
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Create Vulnerable Code
               run: |
@@ -67,19 +73,25 @@ jobs:
               uses: ./actions/osdo-sast
               with:
                   path: vuln-project
-              continue-on-error: true
 
             - name: Verify Vulnerability Detected
-              if: steps.sast.outputs.vulnerabilities-found == '0'
+              env:
+                  FINDINGS: ${{ steps.sast.outputs.findings }}
               run: |
-                  echo "Vulnerable code should have findings"
-                  exit 1
+                  if [ -z "$FINDINGS" ]; then
+                    echo "::error::osdo-sast reported no findings output; the scan did not produce a result"
+                    exit 1
+                  fi
+                  if [ "$FINDINGS" -lt 1 ]; then
+                    echo "::error::vulnerable code should have findings, got $FINDINGS"
+                    exit 1
+                  fi
 
     test-osdo-sca:
         name: Test osdo-sca
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Create Clean Project
               run: |
@@ -101,7 +113,7 @@ jobs:
         name: Test osdo-secrets-scan
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Create Clean Files
               run: |
@@ -117,7 +129,7 @@ jobs:
         name: Test osdo-sbom
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Generate SBOM
               uses: ./actions/osdo-sbom
@@ -137,7 +149,7 @@ jobs:
         name: Test osdo-container-scan
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Build Test Image
               run: |
@@ -151,19 +163,48 @@ jobs:
             - name: Scan Container
               uses: ./actions/osdo-container-scan
               with:
-                  image: test-image:latest
+                  image-name: test-image
+                  image-tag: latest
 
     # ============================================
     # Test CLI
     # ============================================
 
+    check-osdo-cli:
+        name: Check @osdo/cli availability
+        runs-on: ubuntu-latest
+        outputs:
+            available: ${{ steps.probe.outputs.available }}
+        steps:
+            - name: Probe npm registry
+              id: probe
+              run: |
+                  if out="$(npm view @osdo/cli version 2>&1)"; then
+                    echo "available=true" >> "$GITHUB_OUTPUT"
+                    echo "@osdo/cli ${out} is published; CLI tests will run."
+                    exit 0
+                  fi
+                  case "$out" in
+                    *E404*)
+                      echo "available=false" >> "$GITHUB_OUTPUT"
+                      reason="@osdo/cli is not published to the npm registry (npm returned E404). CLI tests are skipped until it is published."
+                      echo "::notice title=CLI tests skipped::${reason}"
+                      echo "**CLI tests skipped:** ${reason}" >> "$GITHUB_STEP_SUMMARY"
+                      exit 0
+                      ;;
+                  esac
+                  echo "::error::npm registry check failed for a reason other than E404: ${out}"
+                  exit 1
+
     test-cli-unit:
         name: CLI Unit Tests
         runs-on: ubuntu-latest
+        needs: check-osdo-cli
+        if: needs.check-osdo-cli.outputs.available == 'true'
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
               with:
                   node-version: "22"
 
@@ -182,11 +223,12 @@ jobs:
     test-cli-integration:
         name: CLI Integration Tests
         runs-on: ubuntu-latest
-        needs: test-cli-unit
+        needs: [check-osdo-cli, test-cli-unit]
+        if: needs.check-osdo-cli.outputs.available == 'true'
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
               with:
                   node-version: "22"
 
@@ -202,12 +244,42 @@ jobs:
             - name: Test osdo scan
               run: |
                   cd /tmp/test-project
-                  osdo scan --type sast || true
+                  osdo scan --type sast
 
             - name: Test osdo certify
               run: |
                   cd /tmp/test-project
-                  osdo certify --standard owasp || true
+                  osdo certify --standard owasp
+
+    # ============================================
+    # Script and static checks (no external services)
+    # ============================================
+
+    unit-scripts:
+        name: Script unit tests
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              with:
+                  persist-credentials: false
+
+            - name: Tool versions
+              run: |
+                  python3 --version
+                  shellcheck --version | head -2
+
+            - name: Static checks (SHA pins, no untrusted interpolation in run)
+              run: python3 -I test/static/check-actions.py .
+
+            - name: DCO checker
+              run: bash test/dco/run-tests.sh
+
+            - name: osdo-llm-scan checker
+              run: bash actions/osdo-llm-scan/test.sh
+
+            - name: osdo-sign scripts
+              run: bash actions/osdo-sign/test.sh
 
     # ============================================
     # E2E Tests
@@ -218,7 +290,7 @@ jobs:
         runs-on: ubuntu-latest
         needs: [test-osdo-sast, test-osdo-sca, test-osdo-sbom]
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Stage 1 - SAST
               uses: ./actions/osdo-sast
@@ -280,7 +352,7 @@ jobs:
                               public static void main(String[] args) {}
                           }
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Create ${{ matrix.language }} Project
               run: |
@@ -306,23 +378,26 @@ jobs:
             - test-osdo-secrets-scan
             - test-osdo-sbom
             - test-osdo-container-scan
+            - check-osdo-cli
             - test-cli-unit
             - test-cli-integration
             - e2e-full-pipeline
             - test-multi-language
+            - unit-scripts
         if: always()
         steps:
             - name: Summary
               run: |
-                  echo "## Test Results" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-                  echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-                  echo "| osdo-sast | ${{ needs.test-osdo-sast.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| osdo-sca | ${{ needs.test-osdo-sca.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| osdo-secrets-scan | ${{ needs.test-osdo-secrets-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| osdo-sbom | ${{ needs.test-osdo-sbom.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| osdo-container-scan | ${{ needs.test-osdo-container-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| CLI Unit Tests | ${{ needs.test-cli-unit.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| CLI Integration | ${{ needs.test-cli-integration.result }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| E2E Pipeline | ${{ needs.e2e-full-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "## Test Results" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Component | Status |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| osdo-sast | ${{ needs.test-osdo-sast.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| osdo-sca | ${{ needs.test-osdo-sca.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| osdo-secrets-scan | ${{ needs.test-osdo-secrets-scan.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| osdo-sbom | ${{ needs.test-osdo-sbom.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| osdo-container-scan | ${{ needs.test-osdo-container-scan.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| CLI Unit Tests | ${{ needs.test-cli-unit.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| CLI Integration | ${{ needs.test-cli-integration.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| E2E Pipeline | ${{ needs.e2e-full-pipeline.result }} |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| Script unit tests | ${{ needs.unit-scripts.result }} |" >> "$GITHUB_STEP_SUMMARY"

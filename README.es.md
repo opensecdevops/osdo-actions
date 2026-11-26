@@ -98,6 +98,32 @@ osdo-actions/
 
 ---
 
+### Firmar artefactos con osdo-sign
+
+`osdo-sign` genera firmas Sigstore sin claves (keyless) con cosign. No necesita
+secretos: el job debe declarar `id-token: write` para que GitHub emita un token
+OIDC. Cada artefacto obtiene un bundle `<artefacto>.sigstore.json`. La
+verificación está activa por defecto y exige `certificate-identity-regexp`, de
+modo que la firma queda ligada al workflow que la produjo.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # necesario para firma keyless
+
+steps:
+  - uses: opensecdevops/osdo-actions/actions/osdo-sign@<tag-o-sha>
+    with:
+      artifact: |
+        dist/app.tar.gz
+        dist/sbom.json
+      certificate-identity-regexp: '^https://github.com/<org>/<repo>/\.github/workflows/release\.yml@refs/tags/v.*$'
+```
+
+Los consumidores verifican con `cosign verify-blob --bundle dist/app.tar.gz.sigstore.json
+--certificate-identity-regexp '<mismo regexp>' --certificate-oidc-issuer
+https://token.actions.githubusercontent.com dist/app.tar.gz`.
+
 ## Uso Rápido
 
 ### Usar una Acción Individual

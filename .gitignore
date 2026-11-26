@@ -58,3 +58,7 @@ typings/
 .osdo/results
 .osdo/test-results
 .vscode
+
+# Python bytecode from local checks
+__pycache__/
+*.pyc

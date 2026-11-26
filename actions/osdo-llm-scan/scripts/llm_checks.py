@@ -53,13 +53,24 @@ CHECK_ENV = {
     "shell": "OSDO_CHECK_SHELL_SCRIPTS",
 }
 
-EXCLUDED_DIRS = {".git", "node_modules", ".osdo"}
 PROSE_EXTS = {".md", ".mdx", ".markdown", ".txt", ".rst", ".html", ".htm", ".tmpl",
               ".template", ".j2", ".jinja", ".jinja2", ".hbs", ".prompt", ".yaml", ".yml", ".json"}
 FRONTMATTER_EXTS = {".md", ".mdx", ".markdown"}
 MCP_BASENAMES = {".mcp.json", "mcp.json", "opencode.json"}
 SHELL_EXTS = {".sh", ".bash"}
 SHELL_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
+CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".java", ".kt", ".rb", ".php",
+             ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".sol", ".sql", ".ps1", ".bat",
+             ".cmd", ".tf", ".hcl", ".toml", ".ini", ".cfg", ".conf", ".env", ".xml", ".gradle"}
+TEXT_EXTS = PROSE_EXTS | CODE_EXTS | SHELL_EXTS
+BINARY_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".pdf", ".zip", ".gz", ".tgz",
+               ".tar", ".bz2", ".xz", ".7z", ".jar", ".class", ".so", ".dylib", ".dll", ".exe", ".bin",
+               ".wasm", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".mov", ".wav", ".ogg",
+               ".pyc", ".pyo"}
+# Asset files that are scanned wherever they appear, including inside node_modules.
+AGENT_FILE_NAMES = {"SKILL.md", "AGENTS.md", "CLAUDE.md", ".mcp.json", "mcp.json", "opencode.json"}
+# NUL and C0 control bytes other than tab, LF, CR and form feed.
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f]")
 
 
 class CheckError(Exception):
@@ -95,31 +106,53 @@ def env_flag(name, default="true"):
 
 
 def read_text(path):
-    """Return decoded text, or None for binary or unreadable files."""
+    """Return (text, has_control_chars). Text is always decoded, so binary-looking
+    text files are still scanned; the caller decides what a control byte means."""
     try:
         with open(path, "rb") as handle:
             data = handle.read()
     except OSError as exc:
         fail(f"cannot read {path}: {exc}")
-    if b"\x00" in data[:8192]:
-        return None
-    return data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8", errors="replace")
+    return text, CONTROL_CHARS.search(text) is not None
 
 
-def iter_files(root, exclude):
-    for dirpath, dirnames, filenames in os.walk(root):
+def is_agent_file(name):
+    return name in AGENT_FILE_NAMES or os.path.splitext(name)[1].lower() == ".prompt"
+
+
+def iter_files(source, results):
+    """Yield (path, agent_only) for regular files and (path, None) for symlinks.
+
+    Only two exclusions exist, both exact paths: <source>/.git and the results
+    directory. <source>/node_modules is walked but only agent-asset files inside it
+    are yielded (agent_only=True). Symlinks are reported, never followed.
+    """
+    git_path = os.path.join(source, ".git")
+    node_path = os.path.join(source, "node_modules")
+    for dirpath, dirnames, filenames in os.walk(source):
         kept = []
         for name in sorted(dirnames):
-            full = os.path.realpath(os.path.join(dirpath, name))
-            if name in EXCLUDED_DIRS or any(full == e or full.startswith(e + os.sep) for e in exclude):
+            full = os.path.join(dirpath, name)
+            if full == results or full == git_path:
+                continue
+            if os.path.islink(full):
+                yield full, None
                 continue
             kept.append(name)
         dirnames[:] = kept
+        under_node = dirpath == node_path or dirpath.startswith(node_path + os.sep)
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
-            if os.path.islink(full):
+            if full == git_path:
                 continue
-            yield full
+            if os.path.islink(full):
+                yield full, None
+            elif under_node:
+                if is_agent_file(name):
+                    yield full, True
+            else:
+                yield full, False
 
 
 # ---------------------------------------------------------------- provider
@@ -138,9 +171,9 @@ def cmd_provider(args):
     for name, pattern in PROVIDER_PATTERNS:
         if detected != "unknown":
             break
-        for path in iter_files(source, []):
-            text = read_text(path)
-            if text is not None and pattern.search(text):
+        for path, _ in iter_files(source, None):
+            text, _ = read_text(path)
+            if pattern.search(text):
                 detected = name
                 break
     print(f"provider={detected}")
@@ -359,7 +392,7 @@ def mcp_servers(doc):
 
 
 def check_mcp(rel, path, findings):
-    text = read_text(path)
+    text, _ = read_text(path)
     try:
         doc = json.loads(text)
     except ValueError as exc:
@@ -526,32 +559,87 @@ def require_dir(path):
     return os.path.realpath(path)
 
 
+def results_location(results_dir, source):
+    """Validate the results directory and return its absolute path.
+
+    The path must be literally equal to its realpath, so no component may be a
+    symlink. It must not be the source tree or one of its parents, since excluding
+    it would hide the scanned tree.
+    """
+    if not results_dir:
+        fail("results-dir is required")
+    results = os.path.abspath(results_dir)
+    if os.path.realpath(results) != results:
+        fail(f"results-dir path contains a symlink (resolves to {os.path.realpath(results)}); refusing to write there")
+    if results == source or source.startswith(results + os.sep):
+        fail("results-dir must not be the source directory or one of its parents")
+    return results
+
+
+def cmd_prepare(args):
+    source = require_dir(args.source)
+    results = results_location(args.results_dir, source)
+    os.makedirs(results, exist_ok=True)
+    findings = os.path.abspath(args.findings)
+    if os.path.dirname(findings) != results:
+        fail("findings file must be inside results-dir")
+    if os.path.islink(findings):
+        fail("findings file is a symlink; refusing to write through it")
+    open(findings, "w", encoding="utf-8").close()
+    return 0
+
+
+def run_text_checks(rel, path, text, base, ext, flags, findings, agent_only):
+    """Run the checks for one text file. Agent-asset files inside node_modules get
+    only the prompt-facing checks; everything else also gets code and shell checks."""
+    if flags["mcp"] and base in MCP_BASENAMES:
+        check_mcp(rel, path, findings)
+    if flags["unicode"]:
+        check_unicode(rel, text, findings)
+    if flags["prose"] and ext in PROSE_EXTS:
+        check_prose(rel, text, findings)
+    if flags["toolscope"] and ext in FRONTMATTER_EXTS:
+        check_toolscope(rel, text, findings)
+    if agent_only:
+        return None
+    if any(flags[k] for k in ("prompt_injection", "pii", "serialization", "output")):
+        check_code(rel, text, flags, findings)
+    return flags["shell"] and is_shell_script(path, text)
+
+
 def cmd_scan(args):
     source = require_dir(args.source)
-    exclude = [os.path.realpath(p) for p in args.exclude if p]
+    results = results_location(args.results_dir, source)
     flags = {name: env_flag(env) for name, env in CHECK_ENV.items()}
     open(args.findings, "a", encoding="utf-8").close()
     findings = Findings(args.findings)
     shell_candidates = []
 
-    for path in iter_files(source, exclude):
+    for path, agent_only in iter_files(source, results):
         rel = os.path.relpath(path, source)
+        if agent_only is None:
+            target = os.path.realpath(path)
+            if target != source and not target.startswith(source + os.sep):
+                findings.add("CODE", "MEDIUM", "symlink-escapes-source", rel,
+                             f"symlink resolves outside the scanned tree ({target}); its content is not scanned")
+            continue
         base = os.path.basename(path)
         ext = os.path.splitext(base)[1].lower()
-        if flags["mcp"] and base in MCP_BASENAMES:
-            check_mcp(rel, path, findings)
-        text = read_text(path)
-        if text is None:
+        if ext in BINARY_EXTS:
             continue
-        if flags["unicode"]:
-            check_unicode(rel, text, findings)
-        if flags["prose"] and ext in PROSE_EXTS:
-            check_prose(rel, text, findings)
-        if flags["toolscope"] and ext in FRONTMATTER_EXTS:
-            check_toolscope(rel, text, findings)
-        if any(flags[k] for k in ("prompt_injection", "pii", "serialization", "output")):
-            check_code(rel, text, flags, findings)
-        if flags["shell"] and is_shell_script(path, text):
+        text, has_controls = read_text(path)
+        if has_controls:
+            if ext in TEXT_EXTS or is_agent_file(base):
+                match = CONTROL_CHARS.search(text)
+                line = text.count("\n", 0, match.start()) + 1
+                findings.add("LLM01", "HIGH", "control-characters-in-text", f"{rel}:{line}",
+                             "NUL or control characters in a text file can hide instructions from review")
+            else:
+                findings.add("CODE", "LOW", "unscanned-binary-content", rel,
+                             "NUL or control bytes and no recognised text extension; not scanned as text")
+                continue
+        is_shell = run_text_checks(rel, path, text, base, ext, flags, findings, agent_only)
+        if is_shell:
             shell_candidates.append(rel)
 
     if flags["shell"]:
@@ -642,10 +730,16 @@ def build_parser():
     p.add_argument("--findings", required=True)
     p.set_defaults(func=cmd_sarif)
 
+    p = sub.add_parser("prepare")
+    p.add_argument("--source", required=True)
+    p.add_argument("--results-dir", required=True)
+    p.add_argument("--findings", required=True)
+    p.set_defaults(func=cmd_prepare)
+
     p = sub.add_parser("scan")
     p.add_argument("--source", required=True)
+    p.add_argument("--results-dir", required=True)
     p.add_argument("--findings", required=True)
-    p.add_argument("--exclude", action="append", default=[])
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("consolidate")

@@ -58,9 +58,9 @@ inputs:
     required: false
     default: "auto"
   results-dir:
-    description: "Directory for scan results"
+    description: "Directory for scan results. Must be a real path (no symlinks), outside the source tree. Defaults to $RUNNER_TEMP/osdo-llm-scan. It is excluded from the scan."
     required: false
-    default: ".osdo/results/llm"
+    default: ""
 
 outputs:
   sarif-file:
@@ -89,10 +89,11 @@ runs:
   using: "composite"
   steps:
     - name: Validate inputs and prepare results
+      id: validate
       shell: bash
       env:
         OSDO_SOURCE: ${{ inputs.source-path }}
-        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_RESULTS_INPUT: ${{ inputs.results-dir }}
         OSDO_SCANNERS: ${{ inputs.scanners }}
       run: |
         set -euo pipefail
@@ -111,8 +112,10 @@ runs:
               ;;
           esac
         done
-        mkdir -p "$OSDO_RESULTS"
-        : > "$OSDO_RESULTS/findings.tsv"
+        results="${OSDO_RESULTS_INPUT:-${RUNNER_TEMP:?RUNNER_TEMP is not set; set results-dir explicitly}/osdo-llm-scan}"
+        python3 -I "$GITHUB_ACTION_PATH/scripts/llm_checks.py" prepare \
+          --source "$OSDO_SOURCE" --results-dir "$results" --findings "$results/findings.tsv"
+        echo "results=$results" >> "$GITHUB_OUTPUT"
 
     - name: Detect LLM provider
       id: provider
@@ -129,7 +132,7 @@ runs:
       shell: bash
       env:
         OSDO_SOURCE: ${{ inputs.source-path }}
-        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_RESULTS: ${{ steps.validate.outputs.results }}
       run: |
         set -euo pipefail
         if ! command -v semgrep >/dev/null 2>&1; then
@@ -211,7 +214,7 @@ runs:
       shell: bash
       env:
         OSDO_SOURCE: ${{ inputs.source-path }}
-        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_RESULTS: ${{ steps.validate.outputs.results }}
         OSDO_CHECK_PROMPT_INJECTION: ${{ inputs.check-prompt-injection }}
         OSDO_CHECK_PII_EXPOSURE: ${{ inputs.check-pii-exposure }}
         OSDO_CHECK_MODEL_SERIALIZATION: ${{ inputs.check-model-serialization }}
@@ -225,14 +228,14 @@ runs:
         set -euo pipefail
         python3 -I "$GITHUB_ACTION_PATH/scripts/llm_checks.py" scan \
           --source "$OSDO_SOURCE" \
-          --findings "$OSDO_RESULTS/findings.tsv" \
-          --exclude "$OSDO_RESULTS"
+          --results-dir "$OSDO_RESULTS" \
+          --findings "$OSDO_RESULTS/findings.tsv"
 
     - name: Consolidate results
       id: consolidate
       shell: bash
       env:
-        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_RESULTS: ${{ steps.validate.outputs.results }}
         OSDO_THRESHOLD: ${{ inputs.fail-on-severity }}
       run: |
         set -euo pipefail

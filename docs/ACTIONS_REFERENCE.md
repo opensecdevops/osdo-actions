@@ -331,10 +331,17 @@ jobs:
 
 | Verificación | OWASP GenAI |
 |-------|-------------|
-| Prompt Injection | LLM01 |
+| Prompt Injection (código) | LLM01 |
+| Prompt Injection en prosa (`*.md`, SKILL.md, prompts de agentes, plantillas, comentarios HTML, base64) | LLM01 |
+| Caracteres Unicode ocultos / bidi / tag (U+200B-200F, U+202A-202E, U+2066-2069, U+E0000-E007F) | LLM01 |
 | Insecure Output | LLM02 |
 | Model Serialization | LLM05 |
+| Manifiestos MCP (`.mcp.json`, `opencode.json`): servidores shell, secretos inline, URL remota sin https | LLM05 / LLM06 / LLM07 |
+| Alcance de herramientas en frontmatter de agentes/skills (Bash o escritura sin restricción) | LLM08 |
 | PII Exposure | LLM06 |
+| Shell scripts (shellcheck) | SHELL |
+
+Las salidas `findings-by-category` y `owasp-summary` cuentan hallazgos por categoría. Un scanner que falla detiene el step; no hay fail-open. `semgrep` debe estar en PATH y `shellcheck` también si `check-shell-scripts` está activo.
 
 ---
 

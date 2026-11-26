@@ -342,6 +342,18 @@ else
   fail "real PNG bytes produced findings"
 fi
 
+# 27. The bundled Semgrep rules must parse and validate. CI installs semgrep;
+#     without it this check is skipped with a visible notice.
+if command -v semgrep > /dev/null 2>&1; then
+  if semgrep --validate --metrics=off --config "$ACTION_DIR/rules/llm-rules.yaml" > "$WORK/validate.log" 2>&1; then
+    pass "bundled Semgrep rules validate"
+  else
+    fail "bundled Semgrep rules do not validate"; cat "$WORK/validate.log"
+  fi
+else
+  echo "SKIP bundled Semgrep rules validation: semgrep is not on PATH"
+fi
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures osdo-llm-scan test(s) failed"
   exit 1

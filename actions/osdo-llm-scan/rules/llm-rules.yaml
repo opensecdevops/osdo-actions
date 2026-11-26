@@ -1,0 +1,60 @@
+rules:
+  - id: prompt-injection-risk
+    patterns:
+      - pattern-either:
+          - pattern: 'f"...$USER_INPUT..."'
+          - pattern: '"..." + $USER_INPUT + "..."'
+          - pattern: template.format(..., $USER_INPUT, ...)
+    message: "User input directly in LLM prompt - potential prompt injection"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      owasp: "LLM01"
+      cwe: "CWE-94"
+
+  - id: insecure-model-load
+    patterns:
+      - pattern: pickle.load(...)
+      - pattern: torch.load($X)
+      - pattern: joblib.load(...)
+    message: "Insecure model deserialization detected"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      owasp: "LLM05"
+      cwe: "CWE-502"
+
+  - id: api-key-exposure
+    patterns:
+      - pattern: |
+          openai.api_key = "..."
+      - pattern: |
+          anthropic.Client(api_key="...")
+    message: "Hardcoded API key detected"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      owasp: "LLM06"
+      cwe: "CWE-798"
+
+  - id: unvalidated-llm-output
+    patterns:
+      - pattern: exec($LLM_RESPONSE)
+      - pattern: eval($LLM_RESPONSE)
+      - pattern: subprocess.call($LLM_RESPONSE, shell=True)
+    message: "LLM output used in dangerous function"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      owasp: "LLM02"
+      cwe: "CWE-94"
+
+  - id: excessive-permissions
+    patterns:
+      - pattern: |
+          functions=[{"type": "function", "function": {"name": "run_shell", ...}}]
+    message: "LLM function with excessive permissions"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      owasp: "LLM08"

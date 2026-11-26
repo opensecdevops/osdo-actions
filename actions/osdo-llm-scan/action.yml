@@ -139,73 +139,11 @@ runs:
           echo "::error::semgrep is not on PATH. Install it before osdo-llm-scan, or remove semgrep from scanners."
           exit 1
         fi
-        rules="$OSDO_RESULTS/semgrep-llm-rules.yaml"
+        rules="$GITHUB_ACTION_PATH/rules/llm-rules.yaml"
         sarif="$OSDO_RESULTS/semgrep-llm.sarif"
-        cat > "$rules" << 'EOF'
-        rules:
-          - id: prompt-injection-risk
-            patterns:
-              - pattern-either:
-                  - pattern: f"...$USER_INPUT..."
-                  - pattern: "..." + $USER_INPUT + "..."
-                  - pattern: template.format(..., $USER_INPUT, ...)
-            message: "User input directly in LLM prompt - potential prompt injection"
-            severity: ERROR
-            languages: [python, javascript, typescript]
-            metadata:
-              owasp: "LLM01"
-              cwe: "CWE-94"
-
-          - id: insecure-model-load
-            patterns:
-              - pattern: pickle.load(...)
-              - pattern: torch.load($X)
-              - pattern: joblib.load(...)
-            message: "Insecure model deserialization detected"
-            severity: ERROR
-            languages: [python]
-            metadata:
-              owasp: "LLM05"
-              cwe: "CWE-502"
-
-          - id: api-key-exposure
-            patterns:
-              - pattern: |
-                  openai.api_key = "..."
-              - pattern: |
-                  anthropic.Client(api_key="...")
-            message: "Hardcoded API key detected"
-            severity: ERROR
-            languages: [python, javascript]
-            metadata:
-              owasp: "LLM06"
-              cwe: "CWE-798"
-
-          - id: unvalidated-llm-output
-            patterns:
-              - pattern: exec($LLM_RESPONSE)
-              - pattern: eval($LLM_RESPONSE)
-              - pattern: subprocess.call($LLM_RESPONSE, shell=True)
-            message: "LLM output used in dangerous function"
-            severity: ERROR
-            languages: [python]
-            metadata:
-              owasp: "LLM02"
-              cwe: "CWE-94"
-
-          - id: excessive-permissions
-            patterns:
-              - pattern: |
-                  functions=[{"type": "function", "function": {"name": "run_shell", ...}}]
-            message: "LLM function with excessive permissions"
-            severity: WARNING
-            languages: [python, javascript]
-            metadata:
-              owasp: "LLM08"
-        EOF
         # Without --error, semgrep exits 0 when it finds issues and non-zero only when
         # it fails to run. Findings are counted from SARIF, so a broken run fails here.
-        semgrep --config "$rules" --config "p/python-security" --sarif --output "$sarif" "$OSDO_SOURCE"
+        semgrep --config "$rules" --config "p/python" --sarif --output "$sarif" "$OSDO_SOURCE"
         python3 -I "$GITHUB_ACTION_PATH/scripts/llm_checks.py" sarif \
           --sarif "$sarif" --findings "$OSDO_RESULTS/findings.tsv"
         echo "sarif=$sarif" >> "$GITHUB_OUTPUT"

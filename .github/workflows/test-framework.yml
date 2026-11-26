@@ -281,6 +281,9 @@ jobs:
             - name: osdo-sign scripts
               run: bash actions/osdo-sign/test.sh
 
+            - name: osdo-smart-contract-audit scripts
+              run: bash actions/osdo-smart-contract-audit/test.sh
+
     # ============================================
     # E2E Tests
     # ============================================

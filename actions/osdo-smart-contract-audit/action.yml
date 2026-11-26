@@ -71,45 +71,29 @@ runs:
   steps:
     - name: Setup Environment
       shell: bash
+      env:
+        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_SOLC_VERSION: ${{ inputs.solidity-version }}
       run: |
-        mkdir -p ${{ inputs.results-dir }}
-        echo "OSDO_WEB3_RESULTS=${{ inputs.results-dir }}" >> $GITHUB_ENV
+        set -euo pipefail
+        mkdir -p "$OSDO_RESULTS"
+        echo "OSDO_WEB3_RESULTS=$OSDO_RESULTS" >> "$GITHUB_ENV"
 
-        # Install solc if not present
-        if ! command -v solc &> /dev/null; then
-          pip install solc-select || true
-          solc-select install ${{ inputs.solidity-version }} || true
-          solc-select use ${{ inputs.solidity-version }} || true
+        # The compiler is required by the scanners. Failure to install it fails the step.
+        if ! command -v solc > /dev/null 2>&1; then
+          pip install "solc-select==1.2.0"
+          solc-select install "$OSDO_SOLC_VERSION"
+          solc-select use "$OSDO_SOLC_VERSION"
         fi
 
     - name: Run Slither Analysis
       if: contains(inputs.scanners, 'slither')
       id: slither
       shell: bash
-      run: |
-        echo "🔍 Running Slither static analysis..."
-
-        # Install Slither
-        pip install slither-analyzer || true
-
-        # Run Slither with SARIF output
-        slither ${{ inputs.contracts-path }} \
-          --sarif ${{ inputs.results-dir }}/slither.sarif \
-          --json ${{ inputs.results-dir }}/slither.json \
-          --solc-remaps "@openzeppelin=node_modules/@openzeppelin" \
-          || true
-
-        # Count findings by severity
-        if [ -f "${{ inputs.results-dir }}/slither.json" ]; then
-          CRITICAL=$(jq '[.results.detectors[] | select(.impact == "High" and .confidence == "High")] | length' ${{ inputs.results-dir }}/slither.json 2>/dev/null || echo 0)
-          HIGH=$(jq '[.results.detectors[] | select(.impact == "High")] | length' ${{ inputs.results-dir }}/slither.json 2>/dev/null || echo 0)
-          
-          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-          echo "high=$HIGH" >> $GITHUB_OUTPUT
-          echo "sarif=${{ inputs.results-dir }}/slither.sarif" >> $GITHUB_OUTPUT
-        fi
-
-        echo "✅ Slither analysis complete"
+      env:
+        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_CONTRACTS: ${{ inputs.contracts-path }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/run-slither.sh"
 
     - name: Run Mythril Symbolic Execution
       if: contains(inputs.scanners, 'mythril')

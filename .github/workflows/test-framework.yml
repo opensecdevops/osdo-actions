@@ -290,6 +290,9 @@ jobs:
             - name: osdo-sca osv-scanner handling
               run: bash actions/osdo-sca/test-osv.sh
 
+            - name: osdo-sast semgrep handling
+              run: bash actions/osdo-sast/test-semgrep.sh
+
     # ============================================
     # E2E Tests
     # ============================================

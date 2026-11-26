@@ -1,102 +1,117 @@
-#!/usr/bin/env bash
-# Tests for scripts/run-osv.sh with a stub osv-scanner on PATH.
-# Covers: normal results, "No package sources found" as a clean result, and every
-# failure that must fail the step (unexpected exit, missing report, bad report).
-set -uo pipefail
+#!/bin/bash
+# Test script for osdo-sca action
+# Tests dependency scanning with various scenarios
 
-ACTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
-failures=0
-pass() { echo "PASS $1"; }
-fail() { echo "FAIL $1"; failures=$((failures + 1)); }
+set -e
 
-mkdir -p "$WORK/bin" "$WORK/tree"
-cat > "$WORK/bin/osv-scanner" <<'STUB'
-#!/usr/bin/env bash
-out=""
-while [ $# -gt 0 ]; do
-  case "$1" in --output) out="$2"; shift ;; esac
-  shift
-done
-if [ -n "${STUB_JSON:-}" ] && [ -n "$out" ]; then printf '%s' "$STUB_JSON" > "$out"; fi
-[ -n "${STUB_MSG:-}" ] && echo "$STUB_MSG"
-exit "${STUB_RC:-0}"
-STUB
-chmod +x "$WORK/bin/osv-scanner"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VULN_JSON='{"results":[{"source":{"path":"package-lock.json"},"packages":[{"package":{"name":"left-pad","version":"1.0.0","ecosystem":"npm"},"vulnerabilities":[{"id":"GHSA-high","database_specific":{"severity":"HIGH"}},{"id":"GHSA-crit","database_specific":{"severity":"CRITICAL"}}]}]}]}'
+echo "🧪 Testing osdo-sca Action"
+echo "================================"
 
-run_script() {  # run_script <results-dir>; sets RC, output in $WORK/output
-  : > "$WORK/output"
-  env -i PATH="$WORK/bin:/usr/bin:/bin" GITHUB_OUTPUT="$WORK/output" \
-    OSDO_RESULTS="$1" OSDO_SCAN_PATH="$WORK/tree" \
-    STUB_JSON="${STUB_JSON:-}" STUB_RC="${STUB_RC:-0}" STUB_MSG="${STUB_MSG:-}" \
-    bash "$ACTION_DIR/scripts/run-osv.sh" > "$WORK/stdout" 2>&1
-  RC=$?
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+run_test() {
+    local test_name=$1
+    local expected_result=$2
+    TESTS_RUN=$((TESTS_RUN + 1))
+    
+    echo ""
+    echo "Test $TESTS_RUN: $test_name"
+    echo "----------------------------"
+    
+    if [ "$expected_result" = "fail" ]; then
+        if ! eval "$3"; then
+            echo -e "${GREEN}✓ Test passed (expected vulnerabilities)${NC}"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            echo -e "${RED}✗ Test failed${NC}"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+        fi
+    else
+        if eval "$3"; then
+            echo -e "${GREEN}✓ Test passed${NC}"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            echo -e "${RED}✗ Test failed${NC}"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+        fi
+    fi
 }
 
-# 1. Vulnerabilities found (exit 1 with a report) are counted, not failed here.
-STUB_JSON="$VULN_JSON" STUB_RC=1 run_script "$WORK/r1"
-if [ "$RC" -eq 0 ] && grep -qx "osv-total=1" "$WORK/output" && grep -qx "osv-critical=1" "$WORK/output" \
-  && grep -qx "osv-high=1" "$WORK/output" && grep -qx "osv-no-sources=false" "$WORK/output"; then
-  pass "vulnerability report is counted by severity"
-else
-  fail "vulnerability report counts wrong (rc=$RC)"; cat "$WORK/stdout"
-fi
+TEST_DIR=$(mktemp -d)
+trap "rm -rf $TEST_DIR" EXIT
 
-# 2. Clean scan (exit 0 with an empty report) gives zero findings.
-STUB_JSON='{"results":[]}' STUB_RC=0 run_script "$WORK/r2"
-if [ "$RC" -eq 0 ] && grep -qx "osv-total=0" "$WORK/output"; then
-  pass "clean report gives zero findings"
-else
-  fail "clean report case wrong (rc=$RC)"
-fi
+# Test 1: Clean npm project
+mkdir -p "$TEST_DIR/clean-npm"
+cat > "$TEST_DIR/clean-npm/package.json" << 'EOF'
+{
+  "name": "clean-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+EOF
 
-# 3. "No package sources found" (exit 128) is a clean result with an explicit notice,
-#    and it does not need a report file.
-STUB_JSON="" STUB_RC=128 STUB_MSG="No package sources found, --help for usage information." run_script "$WORK/r3"
-if [ "$RC" -eq 0 ] && grep -qx "osv-total=0" "$WORK/output" && grep -qx "osv-no-sources=true" "$WORK/output" \
-  && grep -q "::notice" "$WORK/stdout"; then
-  pass "no package sources is a clean result with a notice"
-else
-  fail "no-package-sources case wrong (rc=$RC)"; cat "$WORK/stdout"
-fi
+run_test "Clean npm project should pass" "pass" "
+    cd $TEST_DIR/clean-npm && \
+    npm install --silent 2>&1 > /dev/null && \
+    npm audit --json > audit.json && \
+    [ \$(jq '.metadata.vulnerabilities.total' audit.json) -eq 0 ]
+"
 
-# 4. Exit 128 for any other reason fails the step.
-STUB_JSON="" STUB_RC=128 STUB_MSG="something else went wrong" run_script "$WORK/r4"
-if [ "$RC" -ne 0 ] && grep -q "without the 'No package sources found' message" "$WORK/stdout"; then
-  pass "exit 128 without the no-sources message fails"
-else
-  fail "unexplained exit 128 did not fail (rc=$RC)"
-fi
+# Test 2: Vulnerable Python dependencies
+mkdir -p "$TEST_DIR/vuln-python"
+cat > "$TEST_DIR/vuln-python/requirements.txt" << 'EOF'
+Django==2.2.0
+requests==2.20.0
+EOF
 
-# 5. A scanner error (exit 2) fails the step, even when it wrote a partial report.
-STUB_JSON="$VULN_JSON" STUB_RC=2 STUB_MSG="error: cannot read lockfile" run_script "$WORK/r5"
-if [ "$RC" -ne 0 ] && grep -q "osv-scanner failed with exit 2" "$WORK/stdout"; then
-  pass "scanner error fails the step"
-else
-  fail "scanner error did not fail (rc=$RC)"
-fi
+run_test "Vulnerable Python deps should be detected" "fail" "
+    cd $TEST_DIR/vuln-python && \
+    pip-audit --disable-pip -r requirements.txt --format json > audit.json 2>&1 && \
+    [ \$(jq '.vulnerabilities | length' audit.json 2>/dev/null || echo 0) -eq 0 ]
+"
 
-# 6. Success without a report fails the step (a missing file must never mean zero).
-STUB_JSON="" STUB_RC=0 run_script "$WORK/r6"
-if [ "$RC" -ne 0 ] && grep -q "wrote no report" "$WORK/stdout"; then
-  pass "missing report after a success fails the step"
-else
-  fail "missing report did not fail (rc=$RC)"
-fi
+# Test 3: Go module with vulnerabilities
+mkdir -p "$TEST_DIR/vuln-go"
+cat > "$TEST_DIR/vuln-go/go.mod" << 'EOF'
+module example.com/app
 
-# 7. A report that is not valid JSON fails the step.
-STUB_JSON='not json' STUB_RC=1 run_script "$WORK/r7"
-if [ "$RC" -ne 0 ]; then
-  pass "malformed report fails the step"
-else
-  fail "malformed report did not fail"
-fi
+go 1.20
 
-if [ "$failures" -ne 0 ]; then
-  echo "$failures osdo-sca test(s) failed"
-  exit 1
+require (
+    github.com/gin-gonic/gin v1.6.0
+)
+EOF
+
+run_test "Vulnerable Go modules should be detected" "fail" "
+    cd $TEST_DIR/vuln-go && \
+    govulncheck -json ./... > vulns.json 2>&1 && \
+    [ \$(jq '.Vulns | length' vulns.json 2>/dev/null || echo 0) -eq 0 ]
+"
+
+# Summary
+echo ""
+echo "================================"
+echo "Test Summary"
+echo "================================"
+echo "Tests run:    $TESTS_RUN"
+echo -e "Tests passed: ${GREEN}$TESTS_PASSED${NC}"
+echo -e "Tests failed: ${RED}$TESTS_FAILED${NC}"
+echo ""
+
+if [ $TESTS_FAILED -eq 0 ]; then
+    echo -e "${GREEN}✅ All tests passed!${NC}"
+    exit 0
+else
+    echo -e "${RED}❌ Some tests failed${NC}"
+    exit 1
 fi
-echo "All osdo-sca tests passed"

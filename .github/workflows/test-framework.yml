@@ -288,7 +288,7 @@ jobs:
               run: bash actions/osdo-setup-env/test.sh
 
             - name: osdo-sca osv-scanner handling
-              run: bash actions/osdo-sca/test.sh
+              run: bash actions/osdo-sca/test-osv.sh
 
     # ============================================
     # E2E Tests

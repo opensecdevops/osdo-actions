@@ -98,6 +98,32 @@ osdo-actions/
 
 ---
 
+### Signing artifacts with osdo-sign
+
+`osdo-sign` produces keyless Sigstore signatures with cosign. It needs no
+secrets: the job must grant `id-token: write` so GitHub issues an OIDC token.
+Each artifact gets a `<artifact>.sigstore.json` bundle. Verification is on by
+default and requires `certificate-identity-regexp`, so the signature is tied to
+the workflow that produced it.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # required for keyless signing
+
+steps:
+  - uses: opensecdevops/osdo-actions/actions/osdo-sign@<tag-or-sha>
+    with:
+      artifact: |
+        dist/app.tar.gz
+        dist/sbom.json
+      certificate-identity-regexp: '^https://github.com/<org>/<repo>/\.github/workflows/release\.yml@refs/tags/v.*$'
+```
+
+Consumers verify with `cosign verify-blob --bundle dist/app.tar.gz.sigstore.json
+--certificate-identity-regexp '<same regexp>' --certificate-oidc-issuer
+https://token.actions.githubusercontent.com dist/app.tar.gz`.
+
 ## Quick Start
 
 ### Use a Single Action

@@ -1,0 +1,10 @@
+[
+  {
+    "sha": "4444444444444444444444444444444444444444",
+    "parents": [{"sha": "0000000000000000000000000000000000000000"}],
+    "commit": {
+      "message": "fix: no sign-off here",
+      "author": {"name": "Jane Dev", "email": "jane@example.org"}
+    }
+  }
+]

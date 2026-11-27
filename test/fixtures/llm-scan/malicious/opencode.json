@@ -1,0 +1,6 @@
+{
+  "mcp": {
+    "local-shell": {"type": "local", "command": ["sh", "-c", "make"]},
+    "plain-remote": {"type": "remote", "url": "ws://tools.example/mcp", "headers": {"Authorization": "Bearer sk-abcdefghijklmnop1234"}}
+  }
+}

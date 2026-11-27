@@ -1,0 +1,21 @@
+[
+  {
+    "sha": "1111111111111111111111111111111111111111",
+    "parents": [{"sha": "0000000000000000000000000000000000000000"}],
+    "commit": {
+      "message": "HOL-265: fix thing\n\nBody text.\n\nSigned-off-by: Jane Dev <jane@example.org>\nJira: HOL-265",
+      "author": {"name": "Jane Dev", "email": "jane@example.org"}
+    }
+  },
+  {
+    "sha": "2222222222222222222222222222222222222222",
+    "parents": [
+      {"sha": "1111111111111111111111111111111111111111"},
+      {"sha": "3333333333333333333333333333333333333333"}
+    ],
+    "commit": {
+      "message": "Merge branch 'main' into feature",
+      "author": {"name": "Jane Dev", "email": "jane@example.org"}
+    }
+  }
+]

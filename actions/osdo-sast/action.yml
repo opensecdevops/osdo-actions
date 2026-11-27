@@ -93,37 +93,16 @@ runs:
       shell: bash
       env:
         SEMGREP_APP_TOKEN: ${{ env.SEMGREP_APP_TOKEN || '' }}
+        OSDO_RESULTS: ${{ inputs.results-dir }}
+        OSDO_PATH: ${{ inputs.path }}
+        OSDO_RULES: ${{ inputs.semgrep-rules }}
       run: |
+        set -euo pipefail
         echo "🔍 Running Semgrep SAST scan..."
-
-        # Install Semgrep
-        pip install semgrep --quiet
-
-        # Determine ruleset
-        ruleset="${{ inputs.semgrep-rules }}"
-        if [ "$ruleset" == "auto" ]; then
-          ruleset="p/security-audit p/secrets"
+        if ! command -v semgrep > /dev/null 2>&1; then
+          pip install "semgrep==1.187.0" --quiet
         fi
-
-        # Run Semgrep
-        semgrep scan \
-          --config "$ruleset" \
-          --json \
-          --output ${{ inputs.results-dir }}/sast/semgrep.json \
-          --sarif \
-          --sarif-output ${{ inputs.results-dir }}/sast/semgrep.sarif \
-          ${{ inputs.path }} || true
-
-        # Extract counts
-        total=$(jq '.results | length' ${{ inputs.results-dir }}/sast/semgrep.json 2>/dev/null || echo "0")
-        errors=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' ${{ inputs.results-dir }}/sast/semgrep.json 2>/dev/null || echo "0")
-        warnings=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' ${{ inputs.results-dir }}/sast/semgrep.json 2>/dev/null || echo "0")
-
-        echo "semgrep-total=$total" >> $GITHUB_OUTPUT
-        echo "semgrep-errors=$errors" >> $GITHUB_OUTPUT
-        echo "semgrep-warnings=$warnings" >> $GITHUB_OUTPUT
-
-        echo "📊 Semgrep found: $total findings ($errors errors, $warnings warnings)"
+        bash "$GITHUB_ACTION_PATH/scripts/run-semgrep.sh"
 
     - name: Bandit Scan (Python)
       if: (steps.detect-lang.outputs.language == 'python') && (contains(inputs.scanners, 'bandit') || contains(inputs.scanners, 'all'))

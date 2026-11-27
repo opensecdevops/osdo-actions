@@ -1,5 +1,5 @@
 name: 'OSDO Sign'
-description: 'Sign artifacts and container images'
+description: 'Keyless Sigstore signing of build artifacts with cosign (sign-blob --bundle), optionally verified against a certificate identity'
 author: 'OpenSecDevOps'
 
 branding:
@@ -8,27 +8,61 @@ branding:
 
 inputs:
   artifact:
-    description: 'Artifact or image to sign'
+    description: 'Artifact file path(s) to sign, one per line, relative to the workspace. Each gets a <path>.sigstore.json bundle.'
     required: true
-  key:
-    description: 'Signing key or reference'
-    required: false
   method:
-    description: 'Signing method (cosign, gpg, etc.)'
+    description: 'Signing method. Only "cosign" (keyless, OIDC) is supported.'
     required: false
     default: 'cosign'
+  cosign-version:
+    description: 'cosign release installed by sigstore/cosign-installer'
+    required: false
+    default: 'v3.1.6'
+  verify:
+    description: 'Run cosign verify-blob on every bundle after signing. Requires certificate-identity-regexp.'
+    required: false
+    default: 'true'
+  certificate-identity-regexp:
+    description: 'RE2 regular expression the Fulcio certificate identity must match, for example ^https://github.com/<org>/<repo>/\.github/workflows/release\.yml@refs/tags/v.*$'
+    required: false
+    default: ''
+  certificate-oidc-issuer:
+    description: 'Exact OIDC issuer expected in the certificate'
+    required: false
+    default: 'https://token.actions.githubusercontent.com'
 
 outputs:
-  signature:
-    description: 'Path to signature file'
-    value: ${{ steps.sign.outputs.signature }}
+  bundle-paths:
+    description: 'Newline-separated paths of the Sigstore bundles written by cosign'
+    value: ${{ steps.sign.outputs.bundle-paths }}
+  verified:
+    description: 'true when every bundle passed verify-blob (empty when verify is false)'
+    value: ${{ steps.verify.outputs.verified }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Sign Artifact
+    - name: Install cosign (pinned by sigstore/cosign-installer)
+      uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      with:
+        cosign-release: ${{ inputs.cosign-version }}
+
+    - name: Sign artifacts (keyless)
       id: sign
       shell: bash
-      run: |
-        echo "Signing ${{ inputs.artifact }} with ${{ inputs.method }}"
-        echo "signature=${{ inputs.artifact }}.sig" >> $GITHUB_OUTPUT
+      env:
+        OSDO_ARTIFACTS: ${{ inputs.artifact }}
+        OSDO_METHOD: ${{ inputs.method }}
+        OSDO_VERIFY: ${{ inputs.verify }}
+        OSDO_IDENTITY_RE: ${{ inputs.certificate-identity-regexp }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/sign.sh"
+
+    - name: Verify bundles
+      id: verify
+      if: inputs.verify == 'true'
+      shell: bash
+      env:
+        OSDO_BUNDLES: ${{ steps.sign.outputs.bundle-paths }}
+        OSDO_IDENTITY_RE: ${{ inputs.certificate-identity-regexp }}
+        OSDO_ISSUER: ${{ inputs.certificate-oidc-issuer }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/verify.sh"

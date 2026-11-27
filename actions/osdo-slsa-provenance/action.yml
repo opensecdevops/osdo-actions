@@ -65,14 +65,27 @@ runs:
         mkdir -p ${{ inputs.results-dir }}/slsa
         echo "Results will be stored in ${{ inputs.results-dir }}/slsa"
 
-    - name: Install Cosign
+    - name: Install Cosign (pinned release, SHA-256 verified)
       shell: bash
+      env:
+        OSDO_COSIGN_VERSION: "3.1.6"
+        OSDO_COSIGN_SHA256: "318a99ade4156a0c4113aa983b46c0a0830fa7896a096c63121ee47b610a94c6"
       run: |
-        if ! command -v cosign &> /dev/null; then
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
+        set -euo pipefail
+        platform="$(uname -s)/$(uname -m)"
+        if [ "$platform" != "Linux/x86_64" ]; then
+          echo "::error::osdo-slsa-provenance installs cosign only on Linux/x86_64 (found ${platform}). Put cosign ${OSDO_COSIGN_VERSION} on PATH instead."
+          exit 1
         fi
-        cosign version
+        bin_dir="${RUNNER_TEMP:-$(mktemp -d)}/osdo-bin"
+        mkdir -p "$bin_dir"
+        curl --fail --silent --show-error --location --retry 3 \
+          -o "$bin_dir/cosign" \
+          "https://github.com/sigstore/cosign/releases/download/v${OSDO_COSIGN_VERSION}/cosign-linux-amd64"
+        echo "${OSDO_COSIGN_SHA256}  $bin_dir/cosign" | sha256sum --check --strict
+        chmod 0755 "$bin_dir/cosign"
+        echo "$bin_dir" >> "$GITHUB_PATH"
+        "$bin_dir/cosign" version
 
     - name: Calculate Subject Digests
       id: digest
@@ -372,7 +385,7 @@ runs:
         fi
 
     - name: Upload Provenance Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
       with:
         name: osdo-slsa-provenance
         path: |
